@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -S . -B build
+
+      - name: Build tests
+        run: cmake --build build
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+  build-examples:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [esp32dev, esp32-s3-devkitc-1, esp32-c3-devkitm-1]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('**/library.json') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build library examples (ESP32 Arduino)
+        run: |
+          set -e
+          for d in examples/*; do
+            if [ -d "$d" ]; then
+              echo "Building $d on ${{ matrix.board }} via PlatformIO CI"
+              # Force C++17 for this project to satisfy library requirements
+              pio ci "$d" \
+                --board ${{ matrix.board }} \
+                --lib="." \
+                --project-option "build_unflags=-std=gnu++11" \
+                --project-option "build_flags=-std=gnu++17" \
+                --project-option "lib_deps=ArduinoJson@>=7.0.0"
+            fi
+          done
+
+  arduino-cli:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    env:
+      ESP32_CORE_VERSION: 3.3.3
+      ARDUINO_BOARDS: |
+        esp32:esp32:esp32 esp32dev
+        esp32:esp32:esp32s3 esp32-s3-devkitc-1
+        esp32:esp32:esp32c3 esp32-c3-devkitm-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Arduino CLI
+        uses: arduino/setup-arduino-cli@v1
+
+      - name: Prepare Arduino directories
+        run: |
+          mkdir -p "${HOME}/.arduino15"
+          mkdir -p "${HOME}/Arduino/libraries"
+
+      - name: Cache Arduino dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+          key: ${{ runner.os }}-arduino-esp32-${{ env.ESP32_CORE_VERSION }}-${{ hashFiles('library.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-arduino-esp32-${{ env.ESP32_CORE_VERSION }}-
+            ${{ runner.os }}-arduino-esp32-
+
+      - name: Install ESP32 core
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@${ESP32_CORE_VERSION}
+
+      - name: Install libraries
+        run: |
+          arduino-cli lib update-index
+          arduino-cli lib install "ArduinoJson" "StreamUtils"
+
+      - name: Add local library to sketchbook
+        run: |
+          set -e
+          SKETCHBOOK_DIR="${HOME}/Arduino"
+          mkdir -p "$SKETCHBOOK_DIR/libraries/ESPCrypto"
+          rsync -a --delete --exclude ".git" ./ "$SKETCHBOOK_DIR/libraries/ESPCrypto/"
+
+      - name: Build examples
+        env:
+          BOARDS: ${{ env.ARDUINO_BOARDS }}
+        run: |
+          set -euo pipefail
+          while read -r fqbn board_name; do
+            if [ -z "$fqbn" ]; then
+              continue
+            fi
+            echo "::group::Compiling examples for ${board_name} (${fqbn})"
+            for d in examples/*; do
+              if [ -d "$d" ]; then
+                echo "Compiling $d"
+                arduino-cli compile --fqbn "$fqbn" "$d"
+              fi
+            done
+            echo "::endgroup::"
+          done <<< "$BOARDS"

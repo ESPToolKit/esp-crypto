@@ -1,0 +1,43 @@
+{
+  "name": "ESPCrypto",
+  "version": "1.0.0",
+  "description": "Hardware-accelerated crypto helpers (SHA, AES, RSA/ECC, JWT, salted hashing) for ESP32",
+  "keywords": [
+    "esp32",
+    "crypto",
+    "jwt",
+    "aes",
+    "sha"
+  ],
+  "homepage": "https://github.com/ESPToolKit/esp-crypto",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ESPToolKit/esp-crypto.git"
+  },
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "zekageri"
+    }
+  ],
+  "frameworks": [
+    "arduino"
+  ],
+  "platforms": [
+    "espressif32"
+  ],
+  "dependencies": [
+    {
+      "name": "ArduinoJson",
+      "version": ">=7.0.0"
+    }
+  ],
+  "headers": [
+    "ESPCrypto.h"
+  ],
+  "build": {
+    "flags": [
+      "-std=gnu++17"
+    ]
+  }
+}

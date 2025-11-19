@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract changelog entry
+        id: changelog
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const tag = process.env.GITHUB_REF_NAME || '';
+            const version = tag.startsWith('v') ? tag.slice(1) : tag;
+            const fs = require('node:fs');
+            const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+            const heading = `## [${version}]`;
+            const start = changelog.indexOf(heading);
+            let entry;
+            if (start === -1) {
+              entry = `No changelog entry found for version ${version}.`;
+            } else {
+              const afterHeading = start + heading.length;
+              const nextHeader = changelog.indexOf('\n## [', afterHeading);
+              const sliceEnd = nextHeader === -1 ? changelog.length : nextHeader;
+              entry = changelog.slice(start, sliceEnd).trim();
+            }
+            return entry;
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body: ${{ steps.changelog.outputs.result }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
