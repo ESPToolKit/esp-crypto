@@ -4,11 +4,11 @@
 #include <vector>
 
 String bytesToHex(const std::vector<uint8_t> &bytes) {
-    static const char *HEX = "0123456789ABCDEF";
+    static const char *HEX_DIGITS = "0123456789ABCDEF";
     String out;
     for (uint8_t b : bytes) {
-        out += HEX[(b >> 4) & 0x0F];
-        out += HEX[b & 0x0F];
+        out += HEX_DIGITS[(b >> 4) & 0x0F];
+        out += HEX_DIGITS[b & 0x0F];
     }
     return out;
 }

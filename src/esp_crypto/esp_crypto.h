@@ -132,6 +132,11 @@ class ESPCrypto {
                             const JwtSignOptions &options = JwtSignOptions{}) {
         return createJwt(claims, std::string(key.c_str(), key.length()), options);
     }
+    static String createJwt(const JsonDocument &claims,
+                            const char *key,
+                            const JwtSignOptions &options = JwtSignOptions{}) {
+        return createJwt(claims, key ? std::string(key) : std::string(), options);
+    }
 
     static bool verifyJwt(const String &token,
                           const std::string &key,
@@ -144,6 +149,13 @@ class ESPCrypto {
                           String &error,
                           const JwtVerifyOptions &options = JwtVerifyOptions{}) {
         return verifyJwt(token, std::string(key.c_str(), key.length()), outClaims, error, options);
+    }
+    static bool verifyJwt(const String &token,
+                          const char *key,
+                          JsonDocument &outClaims,
+                          String &error,
+                          const JwtVerifyOptions &options = JwtVerifyOptions{}) {
+        return verifyJwt(token, key ? std::string(key) : std::string(), outClaims, error, options);
     }
 
     static String hashString(const String &input, const PasswordHashOptions &options = PasswordHashOptions{});

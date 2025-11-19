@@ -17,6 +17,7 @@
 #include "mbedtls/md.h"
 #include "mbedtls/pk.h"
 #include "mbedtls/pkcs5.h"
+#include "mbedtls/version.h"
 
 #if defined(ESP_PLATFORM)
 extern "C" {
@@ -54,6 +55,12 @@ extern "C" {
 #endif
 #ifndef ESPCRYPTO_AES_GCM_ACCEL
 #define ESPCRYPTO_AES_GCM_ACCEL 0
+#endif
+
+#if defined(MBEDTLS_VERSION_NUMBER) && MBEDTLS_VERSION_NUMBER >= 0x03000000
+#define ESPCRYPTO_MBEDTLS_V3 1
+#else
+#define ESPCRYPTO_MBEDTLS_V3 0
 #endif
 
 namespace {
@@ -302,6 +309,46 @@ bool computeHash(ShaVariant variant, const uint8_t *data, size_t length, std::ve
     return false;
 }
 
+int pbkdf2Sha256(const unsigned char *password,
+                 size_t passwordLength,
+                 const uint8_t *salt,
+                 size_t saltLength,
+                 uint32_t iterations,
+                 uint8_t *output,
+                 size_t outputLength) {
+#if ESPCRYPTO_MBEDTLS_V3
+    return mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA256,
+                                         password,
+                                         passwordLength,
+                                         salt,
+                                         saltLength,
+                                         iterations,
+                                         outputLength,
+                                         output);
+#else
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (!info) {
+        mbedtls_md_free(&ctx);
+        return MBEDTLS_ERR_MD_BAD_INPUT_DATA;
+    }
+    int ret = mbedtls_md_setup(&ctx, info, 1);
+    if (ret == 0) {
+        ret = mbedtls_pkcs5_pbkdf2_hmac(&ctx,
+                                         password,
+                                         passwordLength,
+                                         salt,
+                                         saltLength,
+                                         iterations,
+                                         outputLength,
+                                         output);
+    }
+    mbedtls_md_free(&ctx);
+    return ret;
+#endif
+}
+
 bool pkParsePublicOrPrivate(mbedtls_pk_context &pk,
                              const std::string &pem,
                              mbedtls_ctr_drbg_context *ctr,
@@ -321,6 +368,7 @@ bool pkParsePublicOrPrivate(mbedtls_pk_context &pk,
             return false;
         }
     }
+#if ESPCRYPTO_MBEDTLS_V3
     ret = mbedtls_pk_parse_key(&pk,
                                 reinterpret_cast<const unsigned char *>(pem.c_str()),
                                 pem.size() + 1,
@@ -328,6 +376,13 @@ bool pkParsePublicOrPrivate(mbedtls_pk_context &pk,
                                 0,
                                 mbedtls_ctr_drbg_random,
                                 ctr);
+#else
+    ret = mbedtls_pk_parse_key(&pk,
+                                reinterpret_cast<const unsigned char *>(pem.c_str()),
+                                pem.size() + 1,
+                                nullptr,
+                                0);
+#endif
     if (ctr == &localCtr) {
         mbedtls_ctr_drbg_free(&localCtr);
         mbedtls_entropy_free(&localEntropy);
@@ -349,6 +404,7 @@ bool pkSignInternal(const std::string &pem,
         mbedtls_pk_free(&pk);
         return false;
     }
+#if ESPCRYPTO_MBEDTLS_V3
     int ret = mbedtls_pk_parse_key(&pk,
                                     reinterpret_cast<const unsigned char *>(pem.c_str()),
                                     pem.size() + 1,
@@ -356,6 +412,13 @@ bool pkSignInternal(const std::string &pem,
                                     0,
                                     mbedtls_ctr_drbg_random,
                                     &ctr);
+#else
+    int ret = mbedtls_pk_parse_key(&pk,
+                                    reinterpret_cast<const unsigned char *>(pem.c_str()),
+                                    pem.size() + 1,
+                                    nullptr,
+                                    0);
+#endif
     if (ret != 0 || !mbedtls_pk_can_do(&pk, expected)) {
         mbedtls_ctr_drbg_free(&ctr);
         mbedtls_entropy_free(&entropy);
@@ -378,12 +441,21 @@ bool pkSignInternal(const std::string &pem,
     }
     size_t sigLen = mbedtls_pk_get_len(&pk);
     signature.assign(sigLen, 0);
+#if ESPCRYPTO_MBEDTLS_V3
     ret = mbedtls_pk_sign(&pk,
                            mbedtls_md_get_type(info),
                            hash.data(), hash.size(),
                            signature.data(), signature.size(), &sigLen,
                            mbedtls_ctr_drbg_random,
                            &ctr);
+#else
+    ret = mbedtls_pk_sign(&pk,
+                           mbedtls_md_get_type(info),
+                           hash.data(), hash.size(),
+                           signature.data(), &sigLen,
+                           mbedtls_ctr_drbg_random,
+                           &ctr);
+#endif
     mbedtls_ctr_drbg_free(&ctr);
     mbedtls_entropy_free(&entropy);
     mbedtls_pk_free(&pk);
@@ -645,12 +717,12 @@ String ESPCrypto::shaHex(const uint8_t *data, size_t length, const ShaOptions &o
     if (digest.empty()) {
         return String();
     }
-    static const char *HEX = "0123456789abcdef";
+    static const char *HEX_DIGITS = "0123456789abcdef";
     std::string hex;
     hex.reserve(digest.size() * 2);
     for (uint8_t b : digest) {
-        hex.push_back(HEX[(b >> 4) & 0x0F]);
-        hex.push_back(HEX[b & 0x0F]);
+        hex.push_back(HEX_DIGITS[(b >> 4) & 0x0F]);
+        hex.push_back(HEX_DIGITS[b & 0x0F]);
     }
     return String(hex.c_str());
 }
@@ -915,15 +987,13 @@ String ESPCrypto::hashString(const String &input, const PasswordHashOptions &opt
     uint8_t cost = std::min<uint8_t>(options.cost, 31);
     uint32_t iterations = 1u << cost;
     std::vector<uint8_t> hash(options.outputBytes, 0);
-    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (!info) {
-        return String();
-    }
-    int ret = mbedtls_pkcs5_pbkdf2_hmac(info,
-                                         reinterpret_cast<const unsigned char *>(input.c_str()), input.length(),
-                                         salt.data(), salt.size(),
-                                         iterations,
-                                         hash.size(), hash.data());
+    int ret = pbkdf2Sha256(reinterpret_cast<const unsigned char *>(input.c_str()),
+                           input.length(),
+                           salt.data(),
+                           salt.size(),
+                           iterations,
+                           hash.data(),
+                           hash.size());
     if (ret != 0) {
         return String();
     }
@@ -951,16 +1021,14 @@ bool ESPCrypto::verifyString(const String &input, const String &encoded) {
         return false;
     }
     uint32_t iterations = 1u << cost;
-    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (!info) {
-        return false;
-    }
     std::vector<uint8_t> derived(hash.size(), 0);
-    int ret = mbedtls_pkcs5_pbkdf2_hmac(info,
-                                         reinterpret_cast<const unsigned char *>(input.c_str()), input.length(),
-                                         salt.data(), salt.size(),
-                                         iterations,
-                                         derived.size(), derived.data());
+    int ret = pbkdf2Sha256(reinterpret_cast<const unsigned char *>(input.c_str()),
+                           input.length(),
+                           salt.data(),
+                           salt.size(),
+                           iterations,
+                           derived.data(),
+                           derived.size());
     if (ret != 0) {
         return false;
     }

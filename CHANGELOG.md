@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - CI now pins Arduino CLI to the ESP32 `2.0.17` core via Espressif's package index, preventing GitHub runners from timing out while downloading the 3.x toolchains and keeping PlatformIO/Arduino builds in sync.
+- Addressed Arduino/PlatformIO build failures by avoiding `Print.h`'s `HEX` macro collision, adding `const char*` JWT helpers, and shimming the mbedTLS 2.x/3.x API differences for `mbedtls_pk_parse_key`, `mbedtls_pk_sign`, and PBKDF2.
 
 ## [1.0.0] - 2025-09-16
 
