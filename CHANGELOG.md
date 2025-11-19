@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - Planned curve25519 helpers once ESP-IDF exposes hardware accel hooks.
 
+### Fixed
+- CI now pins Arduino CLI to the ESP32 `2.0.17` core via Espressif's package index, preventing GitHub runners from timing out while downloading the 3.x toolchains and keeping PlatformIO/Arduino builds in sync.
+
 ## [1.0.0] - 2025-09-16
 
 ### Added

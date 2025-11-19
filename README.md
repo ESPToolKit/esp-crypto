@@ -7,6 +7,9 @@ ESPCrypto wraps the ESP32 hardware crypto blocks (SHA, AES-GCM/CTR, RSA/ECC) wit
 [![Release](https://img.shields.io/github/v/release/ESPToolKit/esp-crypto?sort=semver)](https://github.com/ESPToolKit/esp-crypto/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
+## Toolchain Compatibility
+- GitHub Actions pins the ESP32 Arduino core to `2.0.17` through Espressif's board manager URL so installers don't need to download the 3.x era 500+ MiB RV32/Xtensa bundles. PlatformIO builds continue to use the matching `framework-arduinoespressif32@3.20017.0`, covering `esp32`, `esp32-s3`, and `esp32-c3` boards.
+
 ## Features
 - SHA256/384/512 helpers that try the ESP parallel SHA engine first and fall back to mbedTLS when the accelerator (or platform) is unavailable.
 - AES-GCM and AES-CTR utilities that automatically select the hardware DMA GCM/AES units when present, with portable mbedTLS backups for host/unit tests.

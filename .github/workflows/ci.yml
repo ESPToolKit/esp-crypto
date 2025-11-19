@@ -70,7 +70,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: unit-tests
     env:
-      ESP32_CORE_VERSION: 3.3.3
+      ESP32_CORE_VERSION: 2.0.17
+      ESP32_ADDITIONAL_URL: https://espressif.github.io/arduino-esp32/package_esp32_index.json
       ARDUINO_BOARDS: |
         esp32:esp32:esp32 esp32dev
         esp32:esp32:esp32s3 esp32-s3-devkitc-1
@@ -100,8 +101,8 @@ jobs:
 
       - name: Install ESP32 core
         run: |
-          arduino-cli core update-index
-          arduino-cli core install esp32:esp32@${ESP32_CORE_VERSION}
+          arduino-cli core update-index --additional-urls "${ESP32_ADDITIONAL_URL}"
+          arduino-cli core install esp32:esp32@${ESP32_CORE_VERSION} --additional-urls "${ESP32_ADDITIONAL_URL}"
 
       - name: Install libraries
         run: |
