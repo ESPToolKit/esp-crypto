@@ -82,3 +82,4 @@ MIT — see [LICENSE.md](LICENSE.md).
 - Discover other libraries: <https://github.com/orgs/ESPToolKit/repositories>
 - Website: <https://esptoolkitfrontend.onrender.com/>
 - Support the project: <https://ko-fi.com/esptoolkit>
+- Visit the website: <https://www.esptoolkit.hu/>
