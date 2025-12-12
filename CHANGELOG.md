@@ -20,7 +20,7 @@ All notable changes to this project will be documented in this file.
 - Password hashing now enforces the minimum PBKDF2 iterations from the algorithm policy (defaults to 1024, unless `allowLegacy` is enabled).
 - AES-GCM tag length locked to 16 bytes and policy now requires IVs to be at least 12 bytes unless `allowLegacy` is set.
 
-## [1.0.0] - 2025-09-16
+## [1.0.0] - 2025-11-19
 
 ### Added
 - Initial release of ESPCrypto with SHA256/384/512 helpers that prefer the on-die accelerator but fall back to mbedTLS.
