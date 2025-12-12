@@ -8,6 +8,7 @@
 #include <ctime>
 #include <string>
 #include <vector>
+#include <type_traits>
 
 #include "mbedtls/aes.h"
 #include "mbedtls/base64.h"
@@ -64,6 +65,89 @@ extern "C" {
 #endif
 
 namespace {
+
+constexpr size_t AES_GCM_TAG_BYTES = 16;
+#ifndef ESPCRYPTO_NONCE_GUARD_CACHE
+#define ESPCRYPTO_NONCE_GUARD_CACHE 8
+#endif
+#ifndef ESPCRYPTO_ENABLE_NONCE_GUARD
+#define ESPCRYPTO_ENABLE_NONCE_GUARD 0
+#endif
+
+void secureZero(void *data, size_t length) {
+    if (!data || length == 0) {
+        return;
+    }
+    volatile uint8_t *p = static_cast<volatile uint8_t *>(data);
+    while (length--) {
+        *p++ = 0;
+    }
+#if defined(__GNUC__)
+    __asm__ __volatile__("" : : : "memory");
+#endif
+}
+
+CryptoPolicy &mutablePolicy() {
+    static CryptoPolicy policy;
+    return policy;
+}
+
+CryptoStatusDetail makeStatus(CryptoStatus code, const char *message = nullptr) {
+    CryptoStatusDetail status;
+    status.code = code;
+    if (message) {
+        status.message = message;
+    }
+    return status;
+}
+
+struct NonceRecord {
+    uint32_t keyHash = 0;
+    std::array<uint8_t, 16> iv = {};
+    size_t ivLen = 0;
+    bool used = false;
+};
+
+uint32_t fingerprintKey(const std::vector<uint8_t> &key) {
+    uint32_t hash = 2166136261u;
+    for (uint8_t b : key) {
+        hash ^= b;
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+bool nonceReused(const std::vector<uint8_t> &key, const std::vector<uint8_t> &iv) {
+#if ESPCRYPTO_ENABLE_NONCE_GUARD
+    static std::array<NonceRecord, ESPCRYPTO_NONCE_GUARD_CACHE> cache;
+    static size_t cursor = 0;
+    if (iv.size() > cache[0].iv.size()) {
+        return false;
+    }
+    uint32_t keyHash = fingerprintKey(key);
+    for (const auto &record : cache) {
+        if (!record.used || record.ivLen != iv.size()) {
+            continue;
+        }
+        if (record.keyHash != keyHash) {
+            continue;
+        }
+        if (memcmp(record.iv.data(), iv.data(), iv.size()) == 0) {
+            return true;
+        }
+    }
+    NonceRecord &slot = cache[cursor % cache.size()];
+    slot.used = true;
+    slot.keyHash = keyHash;
+    slot.ivLen = iv.size();
+    memcpy(slot.iv.data(), iv.data(), iv.size());
+    cursor++;
+#else
+    (void)key;
+    (void)iv;
+#endif
+    return false;
+}
 
 enum class Base64Alphabet { Standard, Url };
 
@@ -218,13 +302,13 @@ void fillRandom(uint8_t *data, size_t length) {
 #endif
 }
 
-bool constantTimeEquals(const std::vector<uint8_t> &a, const std::vector<uint8_t> &b) {
+bool constantTimeEquals(CryptoSpan<const uint8_t> a, CryptoSpan<const uint8_t> b) {
     if (a.size() != b.size()) {
         return false;
     }
     uint8_t diff = 0;
     for (size_t i = 0; i < a.size(); ++i) {
-        diff |= static_cast<uint8_t>(a[i] ^ b[i]);
+        diff |= static_cast<uint8_t>(a.data()[i] ^ b.data()[i]);
     }
     return diff == 0;
 }
@@ -425,6 +509,22 @@ bool pkSignInternal(const std::string &pem,
         mbedtls_pk_free(&pk);
         return false;
     }
+    const CryptoPolicy &policy = mutablePolicy();
+    size_t bitlen = mbedtls_pk_get_bitlen(&pk);
+    if (!policy.allowLegacy) {
+        if (expected == MBEDTLS_PK_RSA && bitlen < policy.minRsaBits) {
+            mbedtls_ctr_drbg_free(&ctr);
+            mbedtls_entropy_free(&entropy);
+            mbedtls_pk_free(&pk);
+            return false;
+        }
+        if (expected == MBEDTLS_PK_ECKEY && !policy.allowWeakCurves && bitlen < 256) {
+            mbedtls_ctr_drbg_free(&ctr);
+            mbedtls_entropy_free(&entropy);
+            mbedtls_pk_free(&pk);
+            return false;
+        }
+    }
     std::vector<uint8_t> hash;
     if (!computeHash(variant, data, length, hash)) {
         mbedtls_ctr_drbg_free(&ctr);
@@ -482,6 +582,18 @@ bool pkVerifyInternal(const std::string &pem,
     if (!mbedtls_pk_can_do(&pk, expected)) {
         mbedtls_pk_free(&pk);
         return false;
+    }
+    const CryptoPolicy &policy = mutablePolicy();
+    size_t bitlen = mbedtls_pk_get_bitlen(&pk);
+    if (!policy.allowLegacy) {
+        if (expected == MBEDTLS_PK_RSA && bitlen < policy.minRsaBits) {
+            mbedtls_pk_free(&pk);
+            return false;
+        }
+        if (expected == MBEDTLS_PK_ECKEY && !policy.allowWeakCurves && bitlen < 256) {
+            mbedtls_pk_free(&pk);
+            return false;
+        }
     }
     std::vector<uint8_t> hash;
     if (!computeHash(variant, data, length, hash)) {
@@ -683,29 +795,221 @@ bool parsePasswordHash(const std::string &encoded,
     return true;
 }
 
+CryptoStatusDetail aesGcmEncryptInternal(const std::vector<uint8_t> &key,
+                                         const std::vector<uint8_t> &iv,
+                                         const std::vector<uint8_t> &aad,
+                                         const std::vector<uint8_t> &plaintext,
+                                         std::vector<uint8_t> &ciphertext,
+                                         std::vector<uint8_t> &tag) {
+    if (!aesKeyValid(key) || iv.empty()) {
+        return makeStatus(CryptoStatus::InvalidInput, "invalid key or iv");
+    }
+    const CryptoPolicy &policy = mutablePolicy();
+    if (!policy.allowLegacy && iv.size() < policy.minAesGcmIvBytes) {
+        return makeStatus(CryptoStatus::PolicyViolation, "iv too short");
+    }
+    if (nonceReused(key, iv)) {
+        return makeStatus(CryptoStatus::NonceReuse, "iv reuse");
+    }
+    ciphertext.assign(plaintext.size(), 0);
+    tag.assign(AES_GCM_TAG_BYTES, 0);
+    bool ok = hardwareGcmCrypt(MBEDTLS_GCM_ENCRYPT, key, iv, aad, plaintext, ciphertext, tag);
+    if (!ok) {
+        ok = softwareGcmCrypt(MBEDTLS_GCM_ENCRYPT, key, iv, aad, plaintext, ciphertext, tag);
+    }
+    if (!ok) {
+        secureZero(ciphertext.data(), ciphertext.size());
+        secureZero(tag.data(), tag.size());
+        ciphertext.clear();
+        tag.clear();
+        return makeStatus(CryptoStatus::InternalError, "aes gcm encrypt failed");
+    }
+    return makeStatus(CryptoStatus::Ok);
+}
+
+CryptoStatusDetail aesGcmDecryptInternal(const std::vector<uint8_t> &key,
+                                         const std::vector<uint8_t> &iv,
+                                         const std::vector<uint8_t> &aad,
+                                         const std::vector<uint8_t> &ciphertext,
+                                         const std::vector<uint8_t> &tag,
+                                         std::vector<uint8_t> &plaintext) {
+    if (!aesKeyValid(key) || iv.empty() || tag.size() != AES_GCM_TAG_BYTES) {
+        return makeStatus(CryptoStatus::InvalidInput, "invalid key/iv/tag");
+    }
+    const CryptoPolicy &policy = mutablePolicy();
+    if (!policy.allowLegacy && iv.size() < policy.minAesGcmIvBytes) {
+        return makeStatus(CryptoStatus::PolicyViolation, "iv too short");
+    }
+    plaintext.assign(ciphertext.size(), 0);
+    std::vector<uint8_t> tagCopy = tag;
+    bool ok = hardwareGcmCrypt(MBEDTLS_GCM_DECRYPT, key, iv, aad, ciphertext, plaintext, tagCopy);
+    if (!ok) {
+        tagCopy = tag;
+        ok = softwareGcmCrypt(MBEDTLS_GCM_DECRYPT, key, iv, aad, ciphertext, plaintext, tagCopy);
+    }
+    if (!ok) {
+        secureZero(plaintext.data(), plaintext.size());
+        plaintext.clear();
+        return makeStatus(CryptoStatus::VerifyFailed, "gcm auth failed");
+    }
+    return makeStatus(CryptoStatus::Ok);
+}
+
 }  // namespace
 
-std::vector<uint8_t> ESPCrypto::sha(const uint8_t *data, size_t length, const ShaOptions &options) {
-    if (!data && length > 0) {
-        return {};
+const char *toString(CryptoStatus status) {
+    switch (status) {
+        case CryptoStatus::Ok:
+            return "ok";
+        case CryptoStatus::InvalidInput:
+            return "invalid input";
+        case CryptoStatus::RandomFailure:
+            return "random source failed";
+        case CryptoStatus::Unsupported:
+            return "unsupported";
+        case CryptoStatus::PolicyViolation:
+            return "policy violation";
+        case CryptoStatus::BufferTooSmall:
+            return "buffer too small";
+        case CryptoStatus::VerifyFailed:
+            return "verification failed";
+        case CryptoStatus::DecodeError:
+            return "decode error";
+        case CryptoStatus::JsonError:
+            return "json error";
+        case CryptoStatus::Expired:
+            return "token expired";
+        case CryptoStatus::NotYetValid:
+            return "token not active";
+        case CryptoStatus::AudienceMismatch:
+            return "audience mismatch";
+        case CryptoStatus::IssuerMismatch:
+            return "issuer mismatch";
+        case CryptoStatus::NonceReuse:
+            return "nonce reuse detected";
+        case CryptoStatus::InternalError:
+        default:
+            return "internal error";
     }
-    std::vector<uint8_t> digest(digestLength(options.variant));
-    if (digest.empty()) {
-        return {};
+}
+
+SecureBuffer::SecureBuffer(size_t bytes) {
+    buffer.assign(bytes, 0);
+}
+
+SecureBuffer::SecureBuffer(SecureBuffer &&other) noexcept : buffer(std::move(other.buffer)) {
+    other.wipe();
+}
+
+SecureBuffer &SecureBuffer::operator=(SecureBuffer &&other) noexcept {
+    if (this != &other) {
+        wipe();
+        buffer = std::move(other.buffer);
+        other.wipe();
+    }
+    return *this;
+}
+
+SecureBuffer::~SecureBuffer() {
+    wipe();
+}
+
+void SecureBuffer::wipe() {
+    if (!buffer.empty()) {
+        secureZero(buffer.data(), buffer.size());
+        buffer.clear();
+    }
+}
+
+void SecureBuffer::resize(size_t bytes) {
+    wipe();
+    buffer.assign(bytes, 0);
+}
+
+SecureString::SecureString(std::string value) : value(std::move(value)) {}
+
+SecureString::SecureString(SecureString &&other) noexcept : value(std::move(other.value)) {
+    other.wipe();
+}
+
+SecureString &SecureString::operator=(SecureString &&other) noexcept {
+    if (this != &other) {
+        wipe();
+        value = std::move(other.value);
+        other.wipe();
+    }
+    return *this;
+}
+
+SecureString::~SecureString() {
+    wipe();
+}
+
+void SecureString::wipe() {
+    if (!value.empty()) {
+        secureZero(&value[0], value.size());
+        value.clear();
+    }
+}
+
+void ESPCrypto::setPolicy(const CryptoPolicy &policy) {
+    mutablePolicy() = policy;
+}
+
+CryptoPolicy ESPCrypto::policy() {
+    return mutablePolicy();
+}
+
+CryptoCaps ESPCrypto::caps() {
+    CryptoCaps c;
+    c.shaAccel = ESPCRYPTO_SHA_ACCEL;
+    c.aesAccel = ESPCRYPTO_AES_ACCEL;
+    c.aesGcmAccel = ESPCRYPTO_AES_GCM_ACCEL;
+    return c;
+}
+
+bool ESPCrypto::constantTimeEq(const std::vector<uint8_t> &a, const std::vector<uint8_t> &b) {
+    return constantTimeEquals(CryptoSpan<const uint8_t>(a), CryptoSpan<const uint8_t>(b));
+}
+
+bool ESPCrypto::constantTimeEq(CryptoSpan<const uint8_t> a, CryptoSpan<const uint8_t> b) {
+    return constantTimeEquals(a, b);
+}
+
+CryptoResult<std::vector<uint8_t>> ESPCrypto::shaResult(CryptoSpan<const uint8_t> data, const ShaOptions &options) {
+    CryptoResult<std::vector<uint8_t>> result;
+    if (!data.data() && data.size() > 0) {
+        result.status = makeStatus(CryptoStatus::InvalidInput, "null data");
+        return result;
+    }
+    result.value.assign(digestLength(options.variant), 0);
+    if (result.value.empty()) {
+        result.status = makeStatus(CryptoStatus::InvalidInput, "unknown sha variant");
+        return result;
     }
     static const uint8_t ZERO_BYTE = 0;
-    const uint8_t *buffer = length == 0 ? &ZERO_BYTE : data;
+    const uint8_t *buffer = data.size() == 0 ? &ZERO_BYTE : data.data();
+    size_t length = data.size();
     bool hashed = false;
     if (options.preferHardware) {
-        hashed = tryHardwareSha(options.variant, buffer, length, digest.data());
+        hashed = tryHardwareSha(options.variant, buffer, length, result.value.data());
     }
     if (!hashed) {
-        hashed = softwareSha(options.variant, buffer, length, digest.data());
+        hashed = softwareSha(options.variant, buffer, length, result.value.data());
     }
     if (!hashed) {
-        return {};
+        secureZero(result.value.data(), result.value.size());
+        result.value.clear();
+        result.status = makeStatus(CryptoStatus::InternalError, "sha failed");
+        return result;
     }
-    return digest;
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
+}
+
+std::vector<uint8_t> ESPCrypto::sha(const uint8_t *data, size_t length, const ShaOptions &options) {
+    auto result = shaResult(CryptoSpan<const uint8_t>(data, length), options);
+    return result.ok() ? result.value : std::vector<uint8_t>();
 }
 
 std::vector<uint8_t> ESPCrypto::sha(const std::vector<uint8_t> &data, const ShaOptions &options) {
@@ -737,15 +1041,12 @@ bool ESPCrypto::aesGcmEncrypt(const std::vector<uint8_t> &key,
                               std::vector<uint8_t> &ciphertext,
                               std::vector<uint8_t> &tag,
                               const std::vector<uint8_t> &aad) {
-    if (!aesKeyValid(key) || iv.empty()) {
-        return false;
+    CryptoStatusDetail status = aesGcmEncryptInternal(key, iv, aad, plaintext, ciphertext, tag);
+    if (!status.ok()) {
+        secureZero(ciphertext.data(), ciphertext.size());
+        secureZero(tag.data(), tag.size());
     }
-    ciphertext.assign(plaintext.size(), 0);
-    tag.assign(16, 0);
-    if (hardwareGcmCrypt(MBEDTLS_GCM_ENCRYPT, key, iv, aad, plaintext, ciphertext, tag)) {
-        return true;
-    }
-    return softwareGcmCrypt(MBEDTLS_GCM_ENCRYPT, key, iv, aad, plaintext, ciphertext, tag);
+    return status.ok();
 }
 
 bool ESPCrypto::aesGcmDecrypt(const std::vector<uint8_t> &key,
@@ -754,30 +1055,83 @@ bool ESPCrypto::aesGcmDecrypt(const std::vector<uint8_t> &key,
                               const std::vector<uint8_t> &tag,
                               std::vector<uint8_t> &plaintext,
                               const std::vector<uint8_t> &aad) {
-    if (!aesKeyValid(key) || iv.empty()) {
-        return false;
+    CryptoStatusDetail status = aesGcmDecryptInternal(key, iv, aad, ciphertext, tag, plaintext);
+    if (!status.ok()) {
+        secureZero(plaintext.data(), plaintext.size());
+        plaintext.clear();
     }
-    plaintext.assign(ciphertext.size(), 0);
-    std::vector<uint8_t> tempTag = tag;
-    if (hardwareGcmCrypt(MBEDTLS_GCM_DECRYPT, key, iv, aad, ciphertext, plaintext, tempTag)) {
-        return true;
-    }
-    tempTag = tag;
-    return softwareGcmCrypt(MBEDTLS_GCM_DECRYPT, key, iv, aad, ciphertext, plaintext, tempTag);
+    return status.ok();
 }
 
 bool ESPCrypto::aesCtrCrypt(const std::vector<uint8_t> &key,
                             const std::vector<uint8_t> &nonceCounter,
                             const std::vector<uint8_t> &input,
                             std::vector<uint8_t> &output) {
-    if (!aesKeyValid(key) || nonceCounter.size() != 16) {
+    auto result = aesCtrCrypt(key, nonceCounter, input);
+    if (!result.ok()) {
+        output.clear();
         return false;
     }
-    output.assign(input.size(), 0);
-    if (hardwareAesCtr(key, nonceCounter, input, output)) {
-        return true;
+    output = std::move(result.value);
+    return true;
+}
+
+CryptoResult<GcmMessage> ESPCrypto::aesGcmEncryptAuto(const std::vector<uint8_t> &key,
+                                                      const std::vector<uint8_t> &plaintext,
+                                                      const std::vector<uint8_t> &aad,
+                                                      size_t ivLength) {
+    CryptoResult<GcmMessage> result;
+    const CryptoPolicy &policy = mutablePolicy();
+    if (ivLength == 0) {
+        ivLength = policy.minAesGcmIvBytes;
     }
-    return softwareAesCtr(key, nonceCounter, input, output);
+    if (!policy.allowLegacy && ivLength < policy.minAesGcmIvBytes) {
+        result.status = makeStatus(CryptoStatus::PolicyViolation, "iv too short");
+        return result;
+    }
+    result.value.iv.assign(ivLength, 0);
+    fillRandom(result.value.iv.data(), result.value.iv.size());
+    result.status = aesGcmEncryptInternal(key, result.value.iv, aad, plaintext, result.value.ciphertext, result.value.tag);
+    if (!result.ok()) {
+        result.value = {};
+    }
+    return result;
+}
+
+CryptoResult<std::vector<uint8_t>> ESPCrypto::aesGcmDecrypt(const std::vector<uint8_t> &key,
+                                                            const std::vector<uint8_t> &iv,
+                                                            const std::vector<uint8_t> &ciphertext,
+                                                            const std::vector<uint8_t> &tag,
+                                                            const std::vector<uint8_t> &aad) {
+    CryptoResult<std::vector<uint8_t>> result;
+    result.status = aesGcmDecryptInternal(key, iv, aad, ciphertext, tag, result.value);
+    if (!result.ok()) {
+        result.value.clear();
+    }
+    return result;
+}
+
+CryptoResult<std::vector<uint8_t>> ESPCrypto::aesCtrCrypt(const std::vector<uint8_t> &key,
+                                                          const std::vector<uint8_t> &nonceCounter,
+                                                          const std::vector<uint8_t> &input) {
+    CryptoResult<std::vector<uint8_t>> result;
+    if (!aesKeyValid(key) || nonceCounter.size() != 16) {
+        result.status = makeStatus(CryptoStatus::InvalidInput, "invalid key or nonce");
+        return result;
+    }
+    result.value.assign(input.size(), 0);
+    bool ok = hardwareAesCtr(key, nonceCounter, input, result.value);
+    if (!ok) {
+        ok = softwareAesCtr(key, nonceCounter, input, result.value);
+    }
+    if (!ok) {
+        secureZero(result.value.data(), result.value.size());
+        result.value.clear();
+        result.status = makeStatus(CryptoStatus::InternalError, "aes ctr failed");
+        return result;
+    }
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
 }
 
 bool ESPCrypto::rsaSign(const std::string &privateKeyPem,
@@ -802,6 +1156,40 @@ bool ESPCrypto::rsaVerify(const std::string &publicKeyPem,
     return pkVerifyInternal(publicKeyPem, MBEDTLS_PK_RSA, variant, data, length, signature);
 }
 
+CryptoResult<std::vector<uint8_t>> ESPCrypto::rsaSign(const std::string &privateKeyPem,
+                                                      CryptoSpan<const uint8_t> data,
+                                                      ShaVariant variant) {
+    CryptoResult<std::vector<uint8_t>> result;
+    if (privateKeyPem.empty() || (!data.data() && data.size() > 0)) {
+        result.status = makeStatus(CryptoStatus::InvalidInput, "missing key or data");
+        return result;
+    }
+    if (!pkSignInternal(privateKeyPem, MBEDTLS_PK_RSA, variant, data.data(), data.size(), result.value)) {
+        result.status = makeStatus(CryptoStatus::VerifyFailed, "rsa sign failed");
+        result.value.clear();
+        return result;
+    }
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
+}
+
+CryptoResult<void> ESPCrypto::rsaVerify(const std::string &publicKeyPem,
+                                        CryptoSpan<const uint8_t> data,
+                                        CryptoSpan<const uint8_t> signature,
+                                        ShaVariant variant) {
+    CryptoResult<void> result;
+    if (publicKeyPem.empty() || (!data.data() && data.size() > 0) || signature.empty()) {
+        result.status = makeStatus(CryptoStatus::InvalidInput, "missing key/data/signature");
+        return result;
+    }
+    if (!pkVerifyInternal(publicKeyPem, MBEDTLS_PK_RSA, variant, data.data(), data.size(), std::vector<uint8_t>(signature.data(), signature.data() + signature.size()))) {
+        result.status = makeStatus(CryptoStatus::VerifyFailed, "rsa verify failed");
+        return result;
+    }
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
+}
+
 bool ESPCrypto::eccSign(const std::string &privateKeyPem,
                         const uint8_t *data,
                         size_t length,
@@ -824,16 +1212,74 @@ bool ESPCrypto::eccVerify(const std::string &publicKeyPem,
     return pkVerifyInternal(publicKeyPem, MBEDTLS_PK_ECKEY, variant, data, length, signature);
 }
 
+CryptoResult<std::vector<uint8_t>> ESPCrypto::eccSign(const std::string &privateKeyPem,
+                                                      CryptoSpan<const uint8_t> data,
+                                                      ShaVariant variant) {
+    CryptoResult<std::vector<uint8_t>> result;
+    if (privateKeyPem.empty() || (!data.data() && data.size() > 0)) {
+        result.status = makeStatus(CryptoStatus::InvalidInput, "missing key or data");
+        return result;
+    }
+    if (!pkSignInternal(privateKeyPem, MBEDTLS_PK_ECKEY, variant, data.data(), data.size(), result.value)) {
+        result.status = makeStatus(CryptoStatus::VerifyFailed, "ecc sign failed");
+        result.value.clear();
+        return result;
+    }
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
+}
+
+CryptoResult<void> ESPCrypto::eccVerify(const std::string &publicKeyPem,
+                                        CryptoSpan<const uint8_t> data,
+                                        CryptoSpan<const uint8_t> signature,
+                                        ShaVariant variant) {
+    CryptoResult<void> result;
+    if (publicKeyPem.empty() || (!data.data() && data.size() > 0) || signature.empty()) {
+        result.status = makeStatus(CryptoStatus::InvalidInput, "missing key/data/signature");
+        return result;
+    }
+    if (!pkVerifyInternal(publicKeyPem, MBEDTLS_PK_ECKEY, variant, data.data(), data.size(), std::vector<uint8_t>(signature.data(), signature.data() + signature.size()))) {
+        result.status = makeStatus(CryptoStatus::VerifyFailed, "ecc verify failed");
+        return result;
+    }
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
+}
+
 String ESPCrypto::createJwt(const JsonDocument &claims,
                             const std::string &key,
                             const JwtSignOptions &options) {
+    auto result = createJwtResult(claims, key, options);
+    return result.ok() ? result.value : String();
+}
+
+bool ESPCrypto::verifyJwt(const String &token,
+                          const std::string &key,
+                          JsonDocument &outClaims,
+                          String &error,
+                          const JwtVerifyOptions &options) {
+    auto result = verifyJwtResult(token, key, outClaims, options);
+    if (!result.ok()) {
+        error = result.status.message.length() > 0 ? result.status.message : String(toString(result.status.code));
+        return false;
+    }
+    error = "";
+    return true;
+}
+
+CryptoResult<String> ESPCrypto::createJwtResult(const JsonDocument &claims,
+                                                const std::string &key,
+                                                const JwtSignOptions &options) {
+    CryptoResult<String> result;
     if (key.empty()) {
-        return String();
+        result.status = makeStatus(CryptoStatus::InvalidInput, "key missing");
+        return result;
     }
     JsonDocument header;
     std::string algName = algorithmName(options.algorithm);
     if (algName.empty()) {
-        return String();
+        result.status = makeStatus(CryptoStatus::Unsupported, "unsupported alg");
+        return result;
     }
     header["alg"] = algName.c_str();
     header["typ"] = "JWT";
@@ -865,45 +1311,51 @@ String ESPCrypto::createJwt(const JsonDocument &claims,
     }
 
     std::string headerJson;
-    serializeJson(header, headerJson);
+    if (serializeJson(header, headerJson) == 0) {
+        result.status = makeStatus(CryptoStatus::JsonError, "header serialization failed");
+        return result;
+    }
     std::string payloadJson;
-    serializeJson(payload, payloadJson);
+    if (serializeJson(payload, payloadJson) == 0) {
+        result.status = makeStatus(CryptoStatus::JsonError, "payload serialization failed");
+        return result;
+    }
 
     std::string encodedHeader = base64Encode(reinterpret_cast<const uint8_t *>(headerJson.data()), headerJson.size(), Base64Alphabet::Url);
     std::string encodedPayload = base64Encode(reinterpret_cast<const uint8_t *>(payloadJson.data()), payloadJson.size(), Base64Alphabet::Url);
     if (encodedHeader.empty() || encodedPayload.empty()) {
-        return String();
+        result.status = makeStatus(CryptoStatus::DecodeError, "base64 encode failed");
+        return result;
     }
     std::string signingInput = encodedHeader + "." + encodedPayload;
     std::vector<uint8_t> signature;
     if (!signJwt(options.algorithm, key,
                  reinterpret_cast<const uint8_t *>(signingInput.data()), signingInput.size(), signature)) {
-        return String();
+        result.status = makeStatus(CryptoStatus::InternalError, "sign failed");
+        return result;
     }
     std::string encodedSignature = base64Encode(signature.data(), signature.size(), Base64Alphabet::Url);
     std::string token = signingInput + "." + encodedSignature;
-    return String(token.c_str());
+    result.value = String(token.c_str());
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
 }
 
-bool ESPCrypto::verifyJwt(const String &token,
-                          const std::string &key,
-                          JsonDocument &outClaims,
-                          String &error,
-                          const JwtVerifyOptions &options) {
+CryptoResult<void> ESPCrypto::verifyJwtResult(const String &token,
+                                              const std::string &key,
+                                              JsonDocument &outClaims,
+                                              const JwtVerifyOptions &options) {
+    CryptoResult<void> result;
     if (token.length() == 0 || key.empty()) {
-        error = "token or key missing";
-        return false;
+        result.status = makeStatus(CryptoStatus::InvalidInput, "token or key missing");
+        return result;
     }
     std::string tokenStd(token.c_str(), token.length());
     size_t first = tokenStd.find('.');
-    if (first == std::string::npos) {
-        error = "invalid token structure";
-        return false;
-    }
-    size_t second = tokenStd.find('.', first + 1);
-    if (second == std::string::npos) {
-        error = "invalid token structure";
-        return false;
+    size_t second = tokenStd.find('.', first == std::string::npos ? 0 : first + 1);
+    if (first == std::string::npos || second == std::string::npos) {
+        result.status = makeStatus(CryptoStatus::DecodeError, "invalid token structure");
+        return result;
     }
     std::string headerPart = tokenStd.substr(0, first);
     std::string payloadPart = tokenStd.substr(first + 1, second - first - 1);
@@ -914,123 +1366,270 @@ bool ESPCrypto::verifyJwt(const String &token,
     if (!base64Decode(headerPart, Base64Alphabet::Url, headerBytes) ||
         !base64Decode(payloadPart, Base64Alphabet::Url, payloadBytes) ||
         !base64Decode(signaturePart, Base64Alphabet::Url, signatureBytes)) {
-        error = "base64 decode failed";
-        return false;
+        result.status = makeStatus(CryptoStatus::DecodeError, "base64 decode failed");
+        return result;
     }
     JsonDocument headerDoc;
     if (deserializeJson(headerDoc, headerBytes.data(), headerBytes.size()) != DeserializationError::Ok) {
-        error = "invalid header json";
-        return false;
+        result.status = makeStatus(CryptoStatus::JsonError, "invalid header json");
+        return result;
     }
     JsonDocument payloadDoc;
     if (deserializeJson(payloadDoc, payloadBytes.data(), payloadBytes.size()) != DeserializationError::Ok) {
-        error = "invalid payload json";
-        return false;
+        result.status = makeStatus(CryptoStatus::JsonError, "invalid payload json");
+        return result;
     }
     const char *algStr = headerDoc["alg"].as<const char *>();
     JwtAlgorithm alg = algorithmFromName(algStr ? algStr : "");
     if (alg == JwtAlgorithm::Auto) {
-        error = "unsupported alg";
-        return false;
+        result.status = makeStatus(CryptoStatus::Unsupported, "unsupported alg");
+        return result;
     }
     if (options.algorithm != JwtAlgorithm::Auto && options.algorithm != alg) {
-        error = "alg mismatch";
-        return false;
+        result.status = makeStatus(CryptoStatus::PolicyViolation, "alg mismatch");
+        return result;
     }
     std::string signingInput = headerPart + "." + payloadPart;
     if (!verifySignature(alg, key,
                          reinterpret_cast<const uint8_t *>(signingInput.data()), signingInput.size(),
                          signatureBytes)) {
-        error = "signature mismatch";
-        return false;
+        result.status = makeStatus(CryptoStatus::VerifyFailed, "signature mismatch");
+        return result;
     }
     uint32_t now = currentTimeSeconds(options.currentTimestamp);
     uint32_t exp = payloadDoc["exp"].as<uint32_t>();
     uint32_t nbf = payloadDoc["nbf"].as<uint32_t>();
     if (options.requireExpiration && exp == 0) {
-        error = "missing exp";
-        return false;
+        result.status = makeStatus(CryptoStatus::PolicyViolation, "missing exp");
+        return result;
     }
     if (exp != 0 && now > exp) {
-        error = "token expired";
-        return false;
+        result.status = makeStatus(CryptoStatus::Expired, "token expired");
+        return result;
     }
     if (nbf != 0 && now < nbf) {
-        error = "token not active";
-        return false;
+        result.status = makeStatus(CryptoStatus::NotYetValid, "token not active");
+        return result;
     }
     if (options.audience.length() > 0) {
         const char *aud = payloadDoc["aud"].as<const char *>();
         if (!aud || options.audience != aud) {
-            error = "aud mismatch";
-            return false;
+            result.status = makeStatus(CryptoStatus::AudienceMismatch, "aud mismatch");
+            return result;
         }
     }
     if (options.issuer.length() > 0) {
         const char *iss = payloadDoc["iss"].as<const char *>();
         if (!iss || options.issuer != iss) {
-            error = "iss mismatch";
-            return false;
+            result.status = makeStatus(CryptoStatus::IssuerMismatch, "iss mismatch");
+            return result;
         }
     }
     outClaims.set(payloadDoc);
-    error = "";
-    return true;
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
+}
+String ESPCrypto::hashString(const String &input, const PasswordHashOptions &options) {
+    auto result = hashStringResult(input, options);
+    return result.ok() ? result.value : String();
 }
 
-String ESPCrypto::hashString(const String &input, const PasswordHashOptions &options) {
+bool ESPCrypto::verifyString(const String &input, const String &encoded) {
+    auto result = verifyStringResult(input, encoded);
+    return result.ok();
+}
+
+CryptoResult<String> ESPCrypto::hashStringResult(const String &input, const PasswordHashOptions &options) {
+    CryptoResult<String> result;
     if (input.length() == 0 || options.saltBytes == 0 || options.outputBytes == 0) {
-        return String();
+        result.status = makeStatus(CryptoStatus::InvalidInput, "missing password or params");
+        return result;
     }
     std::vector<uint8_t> salt(options.saltBytes, 0);
     fillRandom(salt.data(), salt.size());
     uint8_t cost = std::min<uint8_t>(options.cost, 31);
     uint32_t iterations = 1u << cost;
-    std::vector<uint8_t> hash(options.outputBytes, 0);
-    int ret = pbkdf2Sha256(reinterpret_cast<const unsigned char *>(input.c_str()),
-                           input.length(),
-                           salt.data(),
-                           salt.size(),
-                           iterations,
-                           hash.data(),
-                           hash.size());
-    if (ret != 0) {
-        return String();
+    const CryptoPolicy &policy = mutablePolicy();
+    if (!policy.allowLegacy && iterations < policy.minPbkdf2Iterations) {
+        uint8_t adjustedCost = cost;
+        while ((1u << adjustedCost) < policy.minPbkdf2Iterations && adjustedCost < 31) {
+            adjustedCost++;
+        }
+        cost = adjustedCost;
+        iterations = 1u << cost;
+    }
+    auto derived = pbkdf2(input, CryptoSpan<const uint8_t>(salt), iterations, options.outputBytes);
+    if (!derived.ok()) {
+        result.status = derived.status;
+        return result;
     }
     std::string saltB64 = base64Encode(salt.data(), salt.size(), Base64Alphabet::Standard);
-    std::string hashB64 = base64Encode(hash.data(), hash.size(), Base64Alphabet::Standard);
+    std::string hashB64 = base64Encode(derived.value.data(), derived.value.size(), Base64Alphabet::Standard);
+    secureZero(derived.value.data(), derived.value.size());
     if (saltB64.empty() || hashB64.empty()) {
-        return String();
+        result.status = makeStatus(CryptoStatus::InternalError, "base64 encode failed");
+        return result;
     }
     std::string encoded = "$esphash$v1$" + std::to_string(cost) + "$" + saltB64 + "$" + hashB64;
-    return String(encoded.c_str());
+    result.value = String(encoded.c_str());
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
 }
 
-bool ESPCrypto::verifyString(const String &input, const String &encoded) {
+CryptoResult<void> ESPCrypto::verifyStringResult(const String &input, const String &encoded) {
+    CryptoResult<void> result;
     if (input.length() == 0 || encoded.length() == 0) {
-        return false;
+        result.status = makeStatus(CryptoStatus::InvalidInput, "missing password or encoded hash");
+        return result;
     }
     uint8_t cost = 0;
     std::vector<uint8_t> salt;
     std::vector<uint8_t> hash;
     std::string encodedStd(encoded.c_str(), encoded.length());
     if (!parsePasswordHash(encodedStd, cost, salt, hash)) {
-        return false;
+        result.status = makeStatus(CryptoStatus::DecodeError, "invalid esphash envelope");
+        return result;
     }
     if (salt.empty() || hash.empty()) {
-        return false;
+        result.status = makeStatus(CryptoStatus::DecodeError, "invalid esphash parts");
+        return result;
     }
     uint32_t iterations = 1u << cost;
-    std::vector<uint8_t> derived(hash.size(), 0);
-    int ret = pbkdf2Sha256(reinterpret_cast<const unsigned char *>(input.c_str()),
-                           input.length(),
+    const CryptoPolicy &policy = mutablePolicy();
+    if (!policy.allowLegacy && iterations < policy.minPbkdf2Iterations) {
+        result.status = makeStatus(CryptoStatus::PolicyViolation, "pbkdf2 iterations below policy");
+        return result;
+    }
+    auto derived = pbkdf2(input, CryptoSpan<const uint8_t>(salt), iterations, hash.size());
+    if (!derived.ok()) {
+        result.status = derived.status;
+        return result;
+    }
+    bool match = constantTimeEquals(CryptoSpan<const uint8_t>(hash), CryptoSpan<const uint8_t>(derived.value));
+    secureZero(derived.value.data(), derived.value.size());
+    result.status = match ? makeStatus(CryptoStatus::Ok) : makeStatus(CryptoStatus::VerifyFailed, "hash mismatch");
+    return result;
+}
+
+CryptoResult<std::vector<uint8_t>> ESPCrypto::hmac(ShaVariant variant,
+                                                   CryptoSpan<const uint8_t> key,
+                                                   CryptoSpan<const uint8_t> data) {
+    CryptoResult<std::vector<uint8_t>> result;
+    const mbedtls_md_info_t *info = mdInfoForVariant(variant);
+    if (!info) {
+        result.status = makeStatus(CryptoStatus::InvalidInput, "invalid sha variant");
+        return result;
+    }
+    result.value.assign(mbedtls_md_get_size(info), 0);
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    int ret = mbedtls_md_setup(&ctx, info, 1);
+    if (ret == 0) {
+        ret = mbedtls_md_hmac_starts(&ctx, reinterpret_cast<const unsigned char *>(key.data()), key.size());
+    }
+    if (ret == 0) {
+        ret = mbedtls_md_hmac_update(&ctx, data.data(), data.size());
+    }
+    if (ret == 0) {
+        ret = mbedtls_md_hmac_finish(&ctx, result.value.data());
+    }
+    mbedtls_md_free(&ctx);
+    if (ret != 0) {
+        secureZero(result.value.data(), result.value.size());
+        result.value.clear();
+        result.status = makeStatus(CryptoStatus::InternalError, "hmac failed");
+        return result;
+    }
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
+}
+
+CryptoResult<std::vector<uint8_t>> ESPCrypto::hkdf(ShaVariant variant,
+                                                   CryptoSpan<const uint8_t> salt,
+                                                   CryptoSpan<const uint8_t> ikm,
+                                                   CryptoSpan<const uint8_t> info,
+                                                   size_t length) {
+    CryptoResult<std::vector<uint8_t>> result;
+    if (length == 0) {
+        result.status = makeStatus(CryptoStatus::InvalidInput, "length missing");
+        return result;
+    }
+    const size_t hashLen = digestLength(variant);
+    if (hashLen == 0) {
+        result.status = makeStatus(CryptoStatus::InvalidInput, "invalid sha variant");
+        return result;
+    }
+    size_t blocks = (length + hashLen - 1) / hashLen;
+    if (blocks > 255) {
+        result.status = makeStatus(CryptoStatus::BufferTooSmall, "length too large");
+        return result;
+    }
+    std::vector<uint8_t> actualSalt;
+    if (salt.empty()) {
+        actualSalt.assign(hashLen, 0);
+    } else {
+        actualSalt.assign(salt.data(), salt.data() + salt.size());
+    }
+    auto prk = hmac(variant, CryptoSpan<const uint8_t>(actualSalt), ikm);
+    secureZero(actualSalt.data(), actualSalt.size());
+    if (!prk.ok()) {
+        result.status = prk.status;
+        return result;
+    }
+    result.value.reserve(length);
+    std::vector<uint8_t> previous;
+    for (size_t i = 0; i < blocks; ++i) {
+        std::vector<uint8_t> blockInput;
+        blockInput.insert(blockInput.end(), previous.begin(), previous.end());
+        if (!info.empty()) {
+            blockInput.insert(blockInput.end(), info.data(), info.data() + info.size());
+        }
+        blockInput.push_back(static_cast<uint8_t>(i + 1));
+        auto block = hmac(variant, CryptoSpan<const uint8_t>(prk.value), CryptoSpan<const uint8_t>(blockInput));
+        secureZero(blockInput.data(), blockInput.size());
+        if (!block.ok()) {
+            secureZero(prk.value.data(), prk.value.size());
+            result.status = block.status;
+            return result;
+        }
+        size_t take = std::min(hashLen, length - result.value.size());
+        result.value.insert(result.value.end(), block.value.begin(), block.value.begin() + take);
+        previous = std::move(block.value);
+    }
+    secureZero(prk.value.data(), prk.value.size());
+    secureZero(previous.data(), previous.size());
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
+}
+
+CryptoResult<std::vector<uint8_t>> ESPCrypto::pbkdf2(const String &password,
+                                                     CryptoSpan<const uint8_t> salt,
+                                                     uint32_t iterations,
+                                                     size_t outputLength) {
+    CryptoResult<std::vector<uint8_t>> result;
+    if (password.length() == 0 || salt.empty() || outputLength == 0) {
+        result.status = makeStatus(CryptoStatus::InvalidInput, "missing password/salt/len");
+        return result;
+    }
+    const CryptoPolicy &policy = mutablePolicy();
+    if (!policy.allowLegacy && iterations < policy.minPbkdf2Iterations) {
+        result.status = makeStatus(CryptoStatus::PolicyViolation, "iterations below policy");
+        return result;
+    }
+    result.value.assign(outputLength, 0);
+    int ret = pbkdf2Sha256(reinterpret_cast<const unsigned char *>(password.c_str()),
+                           password.length(),
                            salt.data(),
                            salt.size(),
                            iterations,
-                           derived.data(),
-                           derived.size());
+                           result.value.data(),
+                           result.value.size());
     if (ret != 0) {
-        return false;
+        secureZero(result.value.data(), result.value.size());
+        result.value.clear();
+        result.status = makeStatus(CryptoStatus::InternalError, "pbkdf2 failed");
+        return result;
     }
-    return constantTimeEquals(hash, derived);
+    result.status = makeStatus(CryptoStatus::Ok);
+    return result;
 }

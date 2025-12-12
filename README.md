@@ -13,11 +13,12 @@ ESPCrypto wraps the ESP32 hardware crypto blocks (SHA, AES-GCM/CTR, RSA/ECC) wit
 
 ## Features
 - SHA256/384/512 helpers that try the ESP parallel SHA engine first and fall back to mbedTLS when the accelerator (or platform) is unavailable.
-- AES-GCM and AES-CTR utilities that automatically select the hardware DMA GCM/AES units when present, with portable mbedTLS backups for host/unit tests.
+- AES-GCM and AES-CTR utilities with a safe `aesGcmEncryptAuto` that generates a random 12-byte IV, optional nonce-reuse debug guard, and capability introspection via `ESPCrypto::caps()`.
 - RSA/ECC signing + verification helpers (PKCS#1 v1.5 + ECDSA) that power HS256/RS256/ES256 JWT flows or stand-alone signatures.
-- Full JWT builder/validator that uses ArduinoJson v7 `JsonDocument`s, fills `iat`/`exp`/`nbf` fields, enforces issuer/audience, and exposes friendly error strings.
-- Salted password hashing helper that mimics bcrypt semantics (`$esphash$v1$cost$base64(salt)$base64(hash)`), supports cost factors, and constant-time verification.
-- Ready-to-flash example plus Unity tests under `test/test_esp_crypto` for HS256 round-trips and password hashing regressions.
+- HMAC/HKDF/PBKDF2 (SHA-256/384/512) building blocks with policy enforcement for PBKDF2 iteration counts; password hashing uses these primitives and constant-time verification.
+- Structured `CryptoStatus` + `CryptoResult<T>` with span-friendly overloads to reduce heap churn and keep error handling uniform; `SecureBuffer`/`SecureString` zeroize sensitive data on scope exit.
+- Full JWT builder/validator that uses ArduinoJson v7 `JsonDocument`s, fills `iat`/`exp`/`nbf` fields, enforces issuer/audience, and exposes both friendly errors and structured status codes.
+- Ready-to-flash example plus Unity tests under `test/test_esp_crypto` with NIST/RFC vectors for SHA, AES-GCM, HKDF, PBKDF2, JWT, and password hashing regressions.
 
 ## Examples
 The `examples/basic_crypto` sketch shows SHA, AES-GCM, JWT, and password hashing in one go:
@@ -31,10 +32,12 @@ void setup() {
     String digest = ESPCrypto::shaHex("esptoolkit");
 
     std::vector<uint8_t> key(32, 0x01);
-    std::vector<uint8_t> iv = {0xde, 0xad, 0xbe, 0xef, 0, 1, 2, 3, 4, 5, 6, 7};
     std::vector<uint8_t> plaintext = {'h', 'e', 'l', 'l', 'o'};
-    std::vector<uint8_t> ciphertext, tag;
-    ESPCrypto::aesGcmEncrypt(key, iv, plaintext, ciphertext, tag);
+    auto gcm = ESPCrypto::aesGcmEncryptAuto(key, plaintext);
+    if (gcm.ok()) {
+        auto decrypted = ESPCrypto::aesGcmDecrypt(key, gcm.value.iv, gcm.value.ciphertext, gcm.value.tag);
+        (void)decrypted;
+    }
 
     JsonDocument claims;
     claims["role"] = "admin";
@@ -60,20 +63,26 @@ void loop() {}
 Run `examples/basic_crypto` via PlatformIO/Arduino to see the full output.
 
 ## API Highlights
-- `std::vector<uint8_t> sha(const uint8_t *data, size_t len, const ShaOptions &opts)` – SHA256/384/512 with optional hardware preference (default on).
-- `bool aesGcmEncrypt(...)/aesGcmDecrypt(...)` – 128/192/256-bit AES-GCM with optional AAD and automatic tag handling. `aesCtrCrypt(...)` covers stream-like CTR use cases.
-- `bool rsaSign/eccSign` and `rsaVerify/eccVerify` – Wrap mbedTLS PK contexts while still benefiting from ESP hardware when available.
-- `String createJwt(const JsonDocument &claims, const String &key, const JwtSignOptions &options)` – Build HS256/RS256/ES256 JWTs with auto `iat`/`exp` fields. `verifyJwt` parses, validates, and returns richer errors.
-- `String hashString(const String &input, const PasswordHashOptions &options)` + `bool verifyString(...)` – Salts, PBKDF2-HMAC-SHA256 (cost = `1 << options.cost`), and constant-time comparison.
+- `CryptoResult<std::vector<uint8_t>> shaResult(...)` / `shaHex(...)` – SHA256/384/512 with optional hardware preference (default on) and structured status codes.
+- `CryptoResult<GcmMessage> aesGcmEncryptAuto(...)` + `aesGcmDecrypt(...)` – 128/192/256-bit AES-GCM with random IVs, optional AAD, 16-byte tags, and policy-enforced IV length; `aesCtrCrypt(...)` covers stream-like CTR use cases.
+- `CryptoResult<std::vector<uint8_t>> rsaSign/eccSign` and `rsaVerify/eccVerify` – Wrap mbedTLS PK contexts while enforcing minimum key sizes unless `allowLegacy` is enabled.
+- `CryptoResult<String> createJwtResult(...)` / `verifyJwtResult(...)` – Build HS256/RS256/ES256 JWTs with auto `iat`/`exp` fields and get back structured status plus the friendly error string versions.
+- `CryptoResult<std::vector<uint8_t>> hmac/hkdf/pbkdf2` and `hashString`/`verifyString` – HMAC/HKDF/PBKDF2 building blocks; password hashes stay in the `$esphash$v1$cost$salt$hash` envelope and compare in constant time.
+- `CryptoCaps caps()` and `SecureBuffer`/`SecureString` – Introspect hardware acceleration availability and zeroize sensitive buffers on scope exit.
 
 ## JWT Helpers
-`JwtSignOptions` lets you set `issuer`, `subject`, `audience`, `expiresInSeconds`, `notBefore`, `issuedAt`, and `keyId`. `JwtVerifyOptions` can enforce issuer/audience matches, require expiration, and accept externally supplied clocks (e.g., SNTP time). Header/payload data stays as ArduinoJson v7 `JsonDocument`s, so you can merge them with `doc.set(...)` or stream them over serial for debugging.
+`JwtSignOptions` lets you set `issuer`, `subject`, `audience`, `expiresInSeconds`, `notBefore`, `issuedAt`, and `keyId`. `JwtVerifyOptions` can enforce issuer/audience matches, require expiration, and accept externally supplied clocks (e.g., SNTP time). Header/payload data stays as ArduinoJson v7 `JsonDocument`s, so you can merge them with `doc.set(...)` or stream them over serial for debugging. Use `createJwt`/`verifyJwt` for friendly strings or `createJwtResult`/`verifyJwtResult` for structured status codes.
+
+## Policy & Guardrails
+- `CryptoPolicy` (default: RSA ≥ 2048 bits, PBKDF2 iterations ≥ 1024, GCM IV ≥ 12 bytes) is readable via `ESPCrypto::policy()` and adjustable with `setPolicy(...)`; set `allowLegacy = true` to opt into weaker parameters.
+- AES-GCM can enable debug nonce-reuse detection via `ESPCRYPTO_ENABLE_NONCE_GUARD` (tiny LRU cache keyed by IV + key fingerprint).
+- `constantTimeEq` and `SecureBuffer`/`SecureString` keep comparisons and cleanup timing-safe.
 
 ## Password Hashing
-`hashString` emits `$esphash$v1$<cost>$<salt>$<hash>` so you can persist passwords without storing secrets. Costs map to `2^cost` PBKDF2 iterations (default 10 ⇒ 1024). `verifyString` accepts any string in that envelope, decodes the salt/hash, replays PBKDF2, and compares in constant time.
+`hashString` emits `$esphash$v1$<cost>$<salt>$<hash>` so you can persist passwords without storing secrets. Costs map to `2^cost` PBKDF2 iterations (default 10 ⇒ 1024) and will auto-bump to the policy minimum iteration count unless `allowLegacy` is enabled. `verifyString` accepts any string in that envelope, decodes the salt/hash, replays PBKDF2, and compares in constant time.
 
 ## Tests
-Hardware exercises run via PlatformIO Unity tests under `test/test_esp_crypto`. Host-side CMake just stubs out tests (ESP-IDF primitives are unavailable when cross-compiling for CI).
+Hardware exercises run via PlatformIO Unity tests under `test/test_esp_crypto`, including KATs for SHA-2, AES-GCM (with tag checks), HKDF, PBKDF2, JWT HS256 round-trips, and password hashing. Host-side CMake just stubs out tests (ESP-IDF primitives are unavailable when cross-compiling for CI).
 
 ## License
 MIT — see [LICENSE.md](LICENSE.md).
