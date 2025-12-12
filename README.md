@@ -10,6 +10,7 @@ ESPCrypto wraps the ESP32 hardware crypto blocks (SHA, AES-GCM/CTR, RSA/ECC) wit
 ## Toolchain Compatibility
 - GitHub Actions builds against the ESP32 Arduino core `3.3.3` via Espressif's board manager URL (IDF 5.x generation) and caches the toolchains to keep PlatformIO/Arduino builds in sync for `esp32`, `esp32-s3`, `esp32-c3`, and `esp32-p4` boards.
 - Runtime code gates the mbedTLS 2.x (ESP-IDF 4.x) and 3.x (ESP-IDF 5.x) API differences so PlatformIO/Arduino builds succeed regardless of which ESP-IDF revision a board package ships.
+- Device fingerprinting prefers `esp_read_mac` from `esp_mac.h` when present and falls back to `esp_efuse_mac_get_default`, so Arduino/PlatformIO board packages that dropped `esp_efuse_mac.h` still build.
 
 ## Features
 - SHA256/384/512 helpers that try the ESP parallel SHA engine first and fall back to mbedTLS when the accelerator (or platform) is unavailable.

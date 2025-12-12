@@ -27,6 +27,9 @@ All notable changes to this project will be documented in this file.
 - Fixed Arduino CLI regressions on ESP32 core 3.x by declaring the DRBG helper before use, wiring AES-GCM span overloads correctly, removing duplicate XChaCha/Ed25519 stubs, and reworking X25519 to the mbedTLS 3-compatible ECDH API.
 - Updated ESP32 core 3.3.3 compatibility for JWKS iteration, ASN.1 ECDSA parsing, mbedTLS private field access (ECC/X25519), and the ESP-IDF AES-GCM alt streaming API so Arduino builds succeed again.
 
+- Guarded MAC retrieval and mbedTLS private access headers so Arduino/PlatformIO builds keep working even when board packages omit `esp_efuse_mac.h` or `mbedtls/private_access.h`.
+(Guarded ESP-IDF/mbedTLS headers so esp-crypto builds again)
+
 ### Changed
 - Password hashing now enforces the minimum PBKDF2 iterations from the algorithm policy (defaults to 1024, unless `allowLegacy` is enabled).
 - AES-GCM tag length locked to 16 bytes and policy now requires IVs to be at least 12 bytes unless `allowLegacy` is set.

@@ -27,7 +27,15 @@
 #include "mbedtls/asn1write.h"
 #include "mbedtls/chachapoly.h"
 #include "mbedtls/ecdh.h"
+#if defined(__has_include)
+#if __has_include("mbedtls/private_access.h")
 #include "mbedtls/private_access.h"
+#endif
+#endif
+
+#ifndef MBEDTLS_PRIVATE
+#define MBEDTLS_PRIVATE(member) member
+#endif
 
 #if defined(ARDUINO) && __has_include(<LittleFS.h>)
 #include <LittleFS.h>
@@ -44,6 +52,18 @@ extern "C" {
 #include "nvs.h"
 #include "esp_efuse_mac.h"
 #if defined(__has_include)
+#if __has_include("esp_mac.h")
+#include "esp_mac.h"
+#define ESPCRYPTO_HAS_ESP_MAC 1
+#else
+#define ESPCRYPTO_HAS_ESP_MAC 0
+#endif
+#if __has_include("esp_efuse_mac.h")
+#include "esp_efuse_mac.h"
+#define ESPCRYPTO_HAS_ESP_EFUSE_MAC 1
+#else
+#define ESPCRYPTO_HAS_ESP_EFUSE_MAC 0
+#endif
 #if __has_include("sha/sha_parallel_engine.h")
 #include "hal/sha_types.h"
 #include "sha/sha_parallel_engine.h"
@@ -57,6 +77,10 @@ extern "C" {
 #include "aes/esp_aes_gcm.h"
 #define ESPCRYPTO_AES_GCM_ACCEL 1
 #endif
+#else
+#include "esp_efuse_mac.h"
+#define ESPCRYPTO_HAS_ESP_MAC 0
+#define ESPCRYPTO_HAS_ESP_EFUSE_MAC 1
 #endif
 }
 #include <sys/time.h>
@@ -82,6 +106,8 @@ extern "C" {
 #else
 #define ESPCRYPTO_MBEDTLS_V3 0
 #endif
+
+JwtAlgorithm algorithmFromName(const std::string &name);
 
 JwtAlgorithm algorithmFromName(const std::string &name);
 
@@ -310,11 +336,29 @@ bool base64Decode(const std::string &input, Base64Alphabet alphabet, std::vector
 CryptoResult<std::vector<uint8_t>> ecdsaDerToRawInternal(CryptoSpan<const uint8_t> der) {
     CryptoResult<std::vector<uint8_t>> result;
     unsigned char *cursor = const_cast<unsigned char *>(der.data());
+    unsigned char *cursor = const_cast<unsigned char *>(der.data());
     const unsigned char *end = der.data() + der.size();
     size_t len = 0;
     mbedtls_mpi r, s;
     mbedtls_mpi_init(&r);
     mbedtls_mpi_init(&s);
+    do {
+        if (mbedtls_asn1_get_tag(&cursor, end, &len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) {
+            result.status = makeStatus(CryptoStatus::DecodeError, "asn1 seq");
+            break;
+        }
+        if (mbedtls_asn1_get_mpi(&cursor, end, &r) != 0 || mbedtls_asn1_get_mpi(&cursor, end, &s) != 0) {
+            result.status = makeStatus(CryptoStatus::DecodeError, "asn1 mpi");
+            break;
+        }
+        size_t rlen = mbedtls_mpi_size(&r);
+        size_t slen = mbedtls_mpi_size(&s);
+        size_t part = std::max(rlen, slen);
+        result.value.assign(part * 2, 0);
+        mbedtls_mpi_write_binary(&r, result.value.data() + (part - rlen), rlen);
+        mbedtls_mpi_write_binary(&s, result.value.data() + part + (part - slen), slen);
+        result.status = makeStatus(CryptoStatus::Ok);
+    } while (false);
     do {
         if (mbedtls_asn1_get_tag(&cursor, end, &len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) {
             result.status = makeStatus(CryptoStatus::DecodeError, "asn1 seq");
@@ -347,6 +391,28 @@ CryptoResult<std::vector<uint8_t>> ecdsaRawToDerInternal(CryptoSpan<const uint8_
     mbedtls_mpi r, s;
     mbedtls_mpi_init(&r);
     mbedtls_mpi_init(&s);
+    do {
+        if (mbedtls_mpi_read_binary(&r, raw.data(), part) != 0 || mbedtls_mpi_read_binary(&s, raw.data() + part, part) != 0) {
+            result.status = makeStatus(CryptoStatus::DecodeError, "raw mpi");
+            break;
+        }
+        unsigned char buffer[200];
+        unsigned char *p = buffer + sizeof(buffer);
+        size_t len = 0;
+        if (mbedtls_asn1_write_mpi(&p, buffer, &s) < 0 || mbedtls_asn1_write_mpi(&p, buffer, &r) < 0) {
+            result.status = makeStatus(CryptoStatus::InternalError, "asn1 mpi write");
+            break;
+        }
+        len = static_cast<size_t>(buffer + sizeof(buffer) - p);
+        if (mbedtls_asn1_write_len(&p, buffer, len) < 0 ||
+            mbedtls_asn1_write_tag(&p, buffer, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) < 0) {
+            result.status = makeStatus(CryptoStatus::InternalError, "asn1 len");
+            break;
+        }
+        size_t total = static_cast<size_t>(buffer + sizeof(buffer) - p);
+        result.value.assign(p, p + total);
+        result.status = makeStatus(CryptoStatus::Ok);
+    } while (false);
     do {
         if (mbedtls_mpi_read_binary(&r, raw.data(), part) != 0 || mbedtls_mpi_read_binary(&s, raw.data() + part, part) != 0) {
             result.status = makeStatus(CryptoStatus::DecodeError, "raw mpi");
@@ -459,18 +525,23 @@ CryptoStatusDetail buildEcPemFromJwk(const std::vector<uint8_t> &x,
     }
     ec = mbedtls_pk_ec(pk);
     if (!ec || mbedtls_ecp_group_load(&ec->MBEDTLS_PRIVATE(grp), gid) != 0) {
+    if (!ec || mbedtls_ecp_group_load(&ec->MBEDTLS_PRIVATE(grp), gid) != 0) {
         mbedtls_pk_free(&pk);
         return status;
     }
+    if (mbedtls_mpi_read_binary(&ec->MBEDTLS_PRIVATE(Q).MBEDTLS_PRIVATE(X), x.data(), x.size()) != 0 ||
+        mbedtls_mpi_read_binary(&ec->MBEDTLS_PRIVATE(Q).MBEDTLS_PRIVATE(Y), y.data(), y.size()) != 0) {
     if (mbedtls_mpi_read_binary(&ec->MBEDTLS_PRIVATE(Q).MBEDTLS_PRIVATE(X), x.data(), x.size()) != 0 ||
         mbedtls_mpi_read_binary(&ec->MBEDTLS_PRIVATE(Q).MBEDTLS_PRIVATE(Y), y.data(), y.size()) != 0) {
         mbedtls_pk_free(&pk);
         return makeStatus(CryptoStatus::DecodeError, "ec coord read");
     }
     if (mbedtls_mpi_lset(&ec->MBEDTLS_PRIVATE(Q).MBEDTLS_PRIVATE(Z), 1) != 0) {
+    if (mbedtls_mpi_lset(&ec->MBEDTLS_PRIVATE(Q).MBEDTLS_PRIVATE(Z), 1) != 0) {
         mbedtls_pk_free(&pk);
         return makeStatus(CryptoStatus::DecodeError, "ec coord set");
     }
+    if (mbedtls_ecp_check_pubkey(&ec->MBEDTLS_PRIVATE(grp), &ec->MBEDTLS_PRIVATE(Q)) != 0) {
     if (mbedtls_ecp_check_pubkey(&ec->MBEDTLS_PRIVATE(grp), &ec->MBEDTLS_PRIVATE(Q)) != 0) {
         mbedtls_pk_free(&pk);
         return makeStatus(CryptoStatus::DecodeError, "ec jwk invalid");
@@ -487,6 +558,7 @@ CryptoStatusDetail buildEcPemFromJwk(const std::vector<uint8_t> &x,
     return makeStatus(CryptoStatus::Ok);
 }
 
+CryptoResult<CryptoKey> jwkToKey(const JsonObjectConst &jwk) {
 CryptoResult<CryptoKey> jwkToKey(const JsonObjectConst &jwk) {
     CryptoResult<CryptoKey> result;
     const char *kty = jwk["kty"].as<const char *>();
@@ -545,10 +617,13 @@ CryptoResult<CryptoKey> jwkToKey(const JsonObjectConst &jwk) {
 CryptoResult<CryptoKey> selectJwkFromSet(const JsonDocument &jwks, const String &kid, JwtAlgorithm algHint) {
     CryptoResult<CryptoKey> result;
     JsonArrayConst keys = jwks["keys"].as<JsonArrayConst>();
+    JsonArrayConst keys = jwks["keys"].as<JsonArrayConst>();
     if (keys.isNull()) {
         result.status = makeStatus(CryptoStatus::InvalidInput, "jwks missing keys");
         return result;
     }
+    for (JsonVariantConst v : keys) {
+        JsonObjectConst jwk = v.as<JsonObjectConst>();
     for (JsonVariantConst v : keys) {
         JsonObjectConst jwk = v.as<JsonObjectConst>();
         const char *jwkKid = jwk["kid"].as<const char *>();
@@ -574,6 +649,9 @@ CryptoResult<CryptoKey> selectJwkFromSet(const JsonDocument &jwks, const String 
     }
     return result;
 }
+
+}  // namespace
+
 
 }  // namespace
 
@@ -750,6 +828,36 @@ static int gcmFinishCompat(mbedtls_gcm_context &ctx, CryptoSpan<uint8_t> tagOut)
 #endif
 }
 
+static int gcmStartsCompat(mbedtls_gcm_context &ctx, int mode, CryptoSpan<const uint8_t> iv, CryptoSpan<const uint8_t> aad) {
+#if defined(MBEDTLS_GCM_ALT) && defined(ESP_PLATFORM)
+    int ret = mbedtls_gcm_starts(&ctx, mode, iv.data(), iv.size());
+    if (ret == 0 && !aad.empty()) {
+        ret = mbedtls_gcm_update_ad(&ctx, aad.data(), aad.size());
+    }
+    return ret;
+#else
+    return mbedtls_gcm_starts(&ctx, mode, iv.data(), iv.size(), aad.data(), aad.size());
+#endif
+}
+
+static int gcmUpdateCompat(mbedtls_gcm_context &ctx, CryptoSpan<const uint8_t> input, CryptoSpan<uint8_t> output) {
+#if defined(MBEDTLS_GCM_ALT) && defined(ESP_PLATFORM)
+    size_t outLen = 0;
+    return mbedtls_gcm_update(&ctx, input.data(), input.size(), output.data(), output.size(), &outLen);
+#else
+    return mbedtls_gcm_update(&ctx, input.size(), input.data(), output.data());
+#endif
+}
+
+static int gcmFinishCompat(mbedtls_gcm_context &ctx, CryptoSpan<uint8_t> tagOut) {
+#if defined(MBEDTLS_GCM_ALT) && defined(ESP_PLATFORM)
+    size_t outLen = 0;
+    return mbedtls_gcm_finish(&ctx, nullptr, 0, &outLen, tagOut.data(), tagOut.size());
+#else
+    return mbedtls_gcm_finish(&ctx, tagOut.data(), tagOut.size());
+#endif
+}
+
 AesGcmCtx::AesGcmCtx() {
     mbedtls_gcm_init(&ctx);
 }
@@ -781,6 +889,7 @@ CryptoStatusDetail AesGcmCtx::beginCommon(const std::vector<uint8_t> &key,
         return makeStatus(CryptoStatus::InternalError, "gcm setkey failed");
     }
     int mode = decrypt ? MBEDTLS_GCM_DECRYPT : MBEDTLS_GCM_ENCRYPT;
+    if (gcmStartsCompat(ctx, mode, iv, aad) != 0) {
     if (gcmStartsCompat(ctx, mode, iv, aad) != 0) {
         return makeStatus(CryptoStatus::InternalError, "gcm start failed");
     }
@@ -815,6 +924,7 @@ CryptoStatusDetail AesGcmCtx::update(CryptoSpan<const uint8_t> input, CryptoSpan
         return makeStatus(CryptoStatus::Ok);
     }
     if (gcmUpdateCompat(ctx, input, output) != 0) {
+    if (gcmUpdateCompat(ctx, input, output) != 0) {
         return makeStatus(CryptoStatus::InternalError, "gcm update failed");
     }
     return makeStatus(CryptoStatus::Ok);
@@ -830,11 +940,13 @@ CryptoStatusDetail AesGcmCtx::finish(CryptoSpan<uint8_t> tagOut) {
             return makeStatus(CryptoStatus::BufferTooSmall, "tag too small");
         }
         if (gcmFinishCompat(ctx, CryptoSpan<uint8_t>(tagOut.data(), AES_GCM_TAG_BYTES)) != 0) {
+        if (gcmFinishCompat(ctx, CryptoSpan<uint8_t>(tagOut.data(), AES_GCM_TAG_BYTES)) != 0) {
             return makeStatus(CryptoStatus::InternalError, "gcm finish failed");
         }
         return makeStatus(CryptoStatus::Ok);
     }
     std::vector<uint8_t> computed(AES_GCM_TAG_BYTES, 0);
+    if (gcmFinishCompat(ctx, CryptoSpan<uint8_t>(computed)) != 0) {
     if (gcmFinishCompat(ctx, CryptoSpan<uint8_t>(computed)) != 0) {
         return makeStatus(CryptoStatus::InternalError, "gcm finish failed");
     }
@@ -1164,7 +1276,18 @@ std::vector<uint8_t> deviceFingerprint() {
     std::vector<uint8_t> fingerprint;
 #if defined(ESP_PLATFORM)
     uint8_t mac[6] = {0};
-    if (esp_efuse_mac_get_default(mac) == ESP_OK) {
+    bool haveMac = false;
+#if ESPCRYPTO_HAS_ESP_MAC && defined(ESP_MAC_WIFI_STA)
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+        haveMac = true;
+    }
+#endif
+#if ESPCRYPTO_HAS_ESP_EFUSE_MAC
+    if (!haveMac && esp_efuse_mac_get_default(mac) == ESP_OK) {
+        haveMac = true;
+    }
+#endif
+    if (haveMac) {
         fingerprint.insert(fingerprint.end(), mac, mac + sizeof(mac));
     }
 #else
