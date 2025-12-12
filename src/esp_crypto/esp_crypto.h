@@ -15,6 +15,7 @@
 #include "mbedtls/md.h"
 #include "mbedtls/aes.h"
 #include "mbedtls/gcm.h"
+#include "mbedtls/pk.h"
 
 #if __has_include(<span>)
 #include <span>
@@ -126,7 +127,11 @@ class CryptoKey {
 
    private:
     friend class ESPCrypto;
-    struct PkCache;
+    struct PkCache {
+        mbedtls_pk_context ctx;
+        bool hasKey = false;
+        bool isPrivate = false;
+    };
     CryptoStatusDetail ensureParsedPk(bool requirePrivate) const;
     std::vector<uint8_t> data;
     KeyFormat format = KeyFormat::Raw;

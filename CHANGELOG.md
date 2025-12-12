@@ -22,8 +22,9 @@ All notable changes to this project will be documented in this file.
 - Documented the security posture, threat model, and acceleration/constant-time expectations in the README.
 
 ### Fixed
-- CI now pins Arduino CLI to the ESP32 `2.0.17` core via Espressif's package index, preventing GitHub runners from timing out while downloading the 3.x toolchains and keeping PlatformIO/Arduino builds in sync.
+- CI now builds Arduino sketches against the ESP32 `3.3.3` core via Espressif's package index, caching the toolchains to keep PlatformIO/Arduino coverage aligned across the supported boards.
 - Addressed Arduino/PlatformIO build failures by avoiding `Print.h`'s `HEX` macro collision, adding `const char*` JWT helpers, and shimming the mbedTLS 2.x/3.x API differences for `mbedtls_pk_parse_key`, `mbedtls_pk_sign`, and PBKDF2.
+- Fixed Arduino CLI regressions on ESP32 core 3.x by declaring the DRBG helper before use, wiring AES-GCM span overloads correctly, removing duplicate XChaCha/Ed25519 stubs, and reworking X25519 to the mbedTLS 3-compatible ECDH API.
 
 ### Changed
 - Password hashing now enforces the minimum PBKDF2 iterations from the algorithm policy (defaults to 1024, unless `allowLegacy` is enabled).

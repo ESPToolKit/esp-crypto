@@ -118,11 +118,15 @@ CryptoStatusDetail makeStatus(CryptoStatus code, const char *message = nullptr) 
     return status;
 }
 
-struct CryptoKey::PkCache {
-    mbedtls_pk_context ctx;
-    bool hasKey = false;
-    bool isPrivate = false;
-};
+bool initDrbg(mbedtls_ctr_drbg_context &ctr, mbedtls_entropy_context &entropy);
+
+bool softwareGcmCrypt(int mode,
+                      const std::vector<uint8_t> &key,
+                      CryptoSpan<const uint8_t> iv,
+                      CryptoSpan<const uint8_t> aad,
+                      CryptoSpan<const uint8_t> input,
+                      CryptoSpan<uint8_t> output,
+                      CryptoSpan<uint8_t> tag);
 
 struct NonceRecord {
     uint32_t keyHash = 0;
@@ -3192,81 +3196,55 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::x25519(CryptoSpan<const uint8_t> p
         result.status = makeStatus(CryptoStatus::InvalidInput, "keys must be 32 bytes");
         return result;
     }
-    mbedtls_ecdh_context ctx;
-    mbedtls_ecdh_init(&ctx);
-    if (mbedtls_ecp_group_load(&ctx.grp, MBEDTLS_ECP_DP_CURVE25519) != 0) {
-        mbedtls_ecdh_free(&ctx);
+    mbedtls_ecp_group grp;
+    mbedtls_ecp_point Qp;
+    mbedtls_mpi d;
+    mbedtls_mpi z;
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_ecp_point_init(&Qp);
+    mbedtls_mpi_init(&d);
+    mbedtls_mpi_init(&z);
+
+    int ret = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_CURVE25519);
+    if (ret != 0) {
         result.status = makeStatus(CryptoStatus::Unsupported, "curve not available");
-        return result;
+        goto cleanup;
     }
-    if (mbedtls_mpi_read_binary(&ctx.d, privateKey.data(), privateKey.size()) != 0 ||
-        mbedtls_mpi_read_binary(&ctx.Qp.X, peerPublic.data(), peerPublic.size()) != 0 ||
-        mbedtls_mpi_lset(&ctx.Qp.Z, 1) != 0) {
-        mbedtls_ecdh_free(&ctx);
+    ret = mbedtls_mpi_read_binary(&d, privateKey.data(), privateKey.size());
+    if (ret != 0) {
+        result.status = makeStatus(CryptoStatus::DecodeError, "private key load failed");
+        goto cleanup;
+    }
+    ret = mbedtls_mpi_read_binary(&Qp.X, peerPublic.data(), peerPublic.size());
+    if (ret != 0 || mbedtls_mpi_lset(&Qp.Z, 1) != 0) {
         result.status = makeStatus(CryptoStatus::DecodeError, "key load failed");
-        return result;
+        goto cleanup;
     }
     result.value.assign(32, 0);
-    if (mbedtls_ecdh_compute_shared(&ctx.grp, &ctx.z, &ctx.Qp, &ctx.d, nullptr, nullptr) != 0) {
-        mbedtls_ecdh_free(&ctx);
+    ret = mbedtls_ecdh_compute_shared(&grp, &z, &Qp, &d, nullptr, nullptr);
+    if (ret != 0) {
         result.value.clear();
         result.status = makeStatus(CryptoStatus::InternalError, "x25519 failed");
-        return result;
+        goto cleanup;
     }
-    mbedtls_mpi_write_binary(&ctx.z, result.value.data(), result.value.size());
-    mbedtls_ecdh_free(&ctx);
+    ret = mbedtls_mpi_write_binary(&z, result.value.data(), result.value.size());
+    if (ret != 0) {
+        secureZero(result.value.data(), result.value.size());
+        result.value.clear();
+        result.status = makeStatus(CryptoStatus::InternalError, "x25519 write failed");
+        goto cleanup;
+    }
     result.status = makeStatus(CryptoStatus::Ok);
+cleanup:
+    mbedtls_mpi_free(&z);
+    mbedtls_mpi_free(&d);
+    mbedtls_ecp_point_free(&Qp);
+    mbedtls_ecp_group_free(&grp);
 #else
     (void)privateKey;
     (void)peerPublic;
     result.status = makeStatus(CryptoStatus::Unsupported, "curve25519 unavailable");
 #endif
-    return result;
-}
-
-CryptoResult<std::vector<uint8_t>> ESPCrypto::xchacha20Poly1305Encrypt(CryptoSpan<const uint8_t> key,
-                                                                       CryptoSpan<const uint8_t> nonce,
-                                                                       CryptoSpan<const uint8_t> aad,
-                                                                       CryptoSpan<const uint8_t> plaintext) {
-    CryptoResult<std::vector<uint8_t>> result;
-    (void)key;
-    (void)nonce;
-    (void)aad;
-    (void)plaintext;
-    result.status = makeStatus(CryptoStatus::Unsupported, "xchacha20poly1305 unavailable");
-    return result;
-}
-
-CryptoResult<std::vector<uint8_t>> ESPCrypto::xchacha20Poly1305Decrypt(CryptoSpan<const uint8_t> key,
-                                                                       CryptoSpan<const uint8_t> nonce,
-                                                                       CryptoSpan<const uint8_t> aad,
-                                                                       CryptoSpan<const uint8_t> ciphertextAndTag) {
-    CryptoResult<std::vector<uint8_t>> result;
-    (void)key;
-    (void)nonce;
-    (void)aad;
-    (void)ciphertextAndTag;
-    result.status = makeStatus(CryptoStatus::Unsupported, "xchacha20poly1305 unavailable");
-    return result;
-}
-
-CryptoResult<std::vector<uint8_t>> ESPCrypto::ed25519Sign(CryptoSpan<const uint8_t> privateKey,
-                                                          CryptoSpan<const uint8_t> message) {
-    CryptoResult<std::vector<uint8_t>> result;
-    (void)privateKey;
-    (void)message;
-    result.status = makeStatus(CryptoStatus::Unsupported, "ed25519 unavailable");
-    return result;
-}
-
-CryptoResult<void> ESPCrypto::ed25519Verify(CryptoSpan<const uint8_t> publicKey,
-                                            CryptoSpan<const uint8_t> message,
-                                            CryptoSpan<const uint8_t> signature) {
-    CryptoResult<void> result;
-    (void)publicKey;
-    (void)message;
-    (void)signature;
-    result.status = makeStatus(CryptoStatus::Unsupported, "ed25519 unavailable");
     return result;
 }
 
