@@ -766,15 +766,12 @@ CryptoStatusDetail AesCtrStream::update(CryptoSpan<const uint8_t> input, CryptoS
 
 static int gcmStartsCompat(mbedtls_gcm_context &ctx, int mode, CryptoSpan<const uint8_t> iv, CryptoSpan<const uint8_t> aad) {
 #if defined(MBEDTLS_GCM_ALT) && defined(ESP_PLATFORM)
-    int ret = mbedtls_gcm_starts(&ctx, mode, iv.data(), iv.size());
-    if (ret != 0) {
-        return ret;
-    }
-    if (!aad.empty()) {
-        // ESP GCM alt (esp_aes_gcm_*) does not expose update_ad in this core, so fail fast when AAD is requested.
-        return MBEDTLS_ERR_GCM_BAD_INPUT;
-    }
-    return 0;
+    return mbedtls_gcm_starts(&ctx,
+                              mode,
+                              iv.data(),
+                              iv.size(),
+                              aad.empty() ? nullptr : aad.data(),
+                              aad.size());
 #else
     return mbedtls_gcm_starts(&ctx, mode, iv.data(), iv.size(), aad.data(), aad.size());
 #endif
@@ -782,8 +779,7 @@ static int gcmStartsCompat(mbedtls_gcm_context &ctx, int mode, CryptoSpan<const 
 
 static int gcmUpdateCompat(mbedtls_gcm_context &ctx, CryptoSpan<const uint8_t> input, CryptoSpan<uint8_t> output) {
 #if defined(MBEDTLS_GCM_ALT) && defined(ESP_PLATFORM)
-    size_t outLen = 0;
-    return mbedtls_gcm_update(&ctx, input.data(), input.size(), output.data(), output.size(), &outLen);
+    return mbedtls_gcm_update(&ctx, input.size(), input.data(), output.data());
 #else
     return mbedtls_gcm_update(&ctx, input.size(), input.data(), output.data());
 #endif
@@ -791,8 +787,7 @@ static int gcmUpdateCompat(mbedtls_gcm_context &ctx, CryptoSpan<const uint8_t> i
 
 static int gcmFinishCompat(mbedtls_gcm_context &ctx, CryptoSpan<uint8_t> tagOut) {
 #if defined(MBEDTLS_GCM_ALT) && defined(ESP_PLATFORM)
-    size_t outLen = 0;
-    return mbedtls_gcm_finish(&ctx, nullptr, 0, &outLen, tagOut.data(), tagOut.size());
+    return mbedtls_gcm_finish(&ctx, tagOut.data(), tagOut.size());
 #else
     return mbedtls_gcm_finish(&ctx, tagOut.data(), tagOut.size());
 #endif
