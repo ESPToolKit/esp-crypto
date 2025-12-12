@@ -36,6 +36,7 @@ _No changes yet._
 - Updated AES-GCM streaming shims to match the ESP32 Arduino 3.3.x `esp_aes_gcm_*` signatures (starts/update/finish) by routing AAD through `gcm_update_ad` and honoring the output-length parameters, avoiding Arduino CLI build failures on `advanced_primitives`.
 - Handled the ESP-IDF 4.x/mbedTLS 2.x AES-GCM alt signatures (6-arg `starts`, 4-arg `update`, 3-arg `finish`) so PlatformIO Arduino builds on ESP32-C3 boards stop failing in `advanced_primitives`.
 - Added array-backed `CryptoSpan` constructors so fixed-size buffers in `bench_crypto` build under PlatformIO Arduino.
+- Gated `std::span` usage to toolchains that actually provide it (or `experimental::span`), fixing ESP32-P4 PlatformIO builds that failed parsing the `std::span` constructor.
 
 ### Changed
 - Password hashing now enforces the minimum PBKDF2 iterations from the algorithm policy (defaults to 1024, unless `allowLegacy` is enabled).

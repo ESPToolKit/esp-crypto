@@ -19,7 +19,14 @@
 
 #if __has_include(<span>)
 #include <span>
+#endif
+
+#if defined(__cpp_lib_span)
 #define ESPCRYPTO_HAS_STD_SPAN 1
+#elif __has_include(<experimental/span>)
+#include <experimental/span>
+#define ESPCRYPTO_HAS_STD_SPAN 1
+#define ESPCRYPTO_USE_EXPERIMENTAL_SPAN 1
 #else
 #define ESPCRYPTO_HAS_STD_SPAN 0
 #endif
@@ -87,7 +94,11 @@ struct CryptoSpan {
     CryptoSpan(const typename std::remove_const<U>::type (&arr)[N]) : ptr(arr), len(N) {}
 #endif
 #if ESPCRYPTO_HAS_STD_SPAN
+#if defined(ESPCRYPTO_USE_EXPERIMENTAL_SPAN)
+    CryptoSpan(std::experimental::span<T> span) : ptr(span.data()), len(span.size()) {}
+#else
     CryptoSpan(std::span<T> span) : ptr(span.data()), len(span.size()) {}
+#endif
 #endif
 
     pointer data() const { return ptr; }
