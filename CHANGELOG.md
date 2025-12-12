@@ -28,6 +28,7 @@ All notable changes to this project will be documented in this file.
 - Updated ESP32 core 3.3.3 compatibility for JWKS iteration, ASN.1 ECDSA parsing, mbedTLS private field access (ECC/X25519), and the ESP-IDF AES-GCM alt streaming API so Arduino builds succeed again.
 - Guarded MAC retrieval and mbedTLS private access headers so Arduino/PlatformIO builds keep working even when board packages omit `esp_efuse_mac.h` or `mbedtls/private_access.h`, and removed the unconditional `esp_efuse_mac.h` include that broke Arduino CLI builds on ESP32 core 3.3.x.
 - Removed duplicated ASN.1/JWK helpers and stray namespace closures that slipped into `esp_crypto.cpp`, fixing Arduino CLI/PlatformIO compilation on ESP32 core 3.3.x.
+- Aligned AES-GCM alt shims and helper declarations so ESP32-C3 Arduino/PlatformIO builds compile with the 3.3.x core again.
 
 ### Changed
 - Password hashing now enforces the minimum PBKDF2 iterations from the algorithm policy (defaults to 1024, unless `allowLegacy` is enabled).

@@ -144,16 +144,6 @@ CryptoStatusDetail makeStatus(CryptoStatus code, const char *message = nullptr) 
     return status;
 }
 
-bool initDrbg(mbedtls_ctr_drbg_context &ctr, mbedtls_entropy_context &entropy);
-
-bool softwareGcmCrypt(int mode,
-                      const std::vector<uint8_t> &key,
-                      CryptoSpan<const uint8_t> iv,
-                      CryptoSpan<const uint8_t> aad,
-                      CryptoSpan<const uint8_t> input,
-                      CryptoSpan<uint8_t> output,
-                      CryptoSpan<uint8_t> tag);
-
 struct NonceRecord {
     uint32_t keyHash = 0;
     std::array<uint8_t, 16> iv = {};
@@ -621,6 +611,16 @@ CryptoResult<CryptoKey> selectJwkFromSet(const JsonDocument &jwks, const String 
 
 }  // namespace
 
+bool initDrbg(mbedtls_ctr_drbg_context &ctr, mbedtls_entropy_context &entropy);
+bool softwareGcmCrypt(int mode,
+                      const std::vector<uint8_t> &key,
+                      CryptoSpan<const uint8_t> iv,
+                      CryptoSpan<const uint8_t> aad,
+                      CryptoSpan<const uint8_t> input,
+                      CryptoSpan<uint8_t> output,
+                      CryptoSpan<uint8_t> tag);
+bool aesKeyValid(const std::vector<uint8_t> &key);
+
 ShaCtx::ShaCtx() {
     mbedtls_md_init(&ctx);
 }
@@ -766,11 +766,7 @@ CryptoStatusDetail AesCtrStream::update(CryptoSpan<const uint8_t> input, CryptoS
 
 static int gcmStartsCompat(mbedtls_gcm_context &ctx, int mode, CryptoSpan<const uint8_t> iv, CryptoSpan<const uint8_t> aad) {
 #if defined(MBEDTLS_GCM_ALT) && defined(ESP_PLATFORM)
-    int ret = mbedtls_gcm_starts(&ctx, mode, iv.data(), iv.size());
-    if (ret == 0 && !aad.empty()) {
-        ret = mbedtls_gcm_update_ad(&ctx, aad.data(), aad.size());
-    }
-    return ret;
+    return mbedtls_gcm_starts(&ctx, mode, iv.data(), iv.size(), aad.data(), aad.size());
 #else
     return mbedtls_gcm_starts(&ctx, mode, iv.data(), iv.size(), aad.data(), aad.size());
 #endif
@@ -778,8 +774,7 @@ static int gcmStartsCompat(mbedtls_gcm_context &ctx, int mode, CryptoSpan<const 
 
 static int gcmUpdateCompat(mbedtls_gcm_context &ctx, CryptoSpan<const uint8_t> input, CryptoSpan<uint8_t> output) {
 #if defined(MBEDTLS_GCM_ALT) && defined(ESP_PLATFORM)
-    size_t outLen = 0;
-    return mbedtls_gcm_update(&ctx, input.data(), input.size(), output.data(), output.size(), &outLen);
+    return mbedtls_gcm_update(&ctx, input.size(), input.data(), output.data());
 #else
     return mbedtls_gcm_update(&ctx, input.size(), input.data(), output.data());
 #endif
@@ -787,8 +782,7 @@ static int gcmUpdateCompat(mbedtls_gcm_context &ctx, CryptoSpan<const uint8_t> i
 
 static int gcmFinishCompat(mbedtls_gcm_context &ctx, CryptoSpan<uint8_t> tagOut) {
 #if defined(MBEDTLS_GCM_ALT) && defined(ESP_PLATFORM)
-    size_t outLen = 0;
-    return mbedtls_gcm_finish(&ctx, nullptr, 0, &outLen, tagOut.data(), tagOut.size());
+    return mbedtls_gcm_finish(&ctx, tagOut.data(), tagOut.size());
 #else
     return mbedtls_gcm_finish(&ctx, tagOut.data(), tagOut.size());
 #endif
