@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - AES-GCM safe helpers that auto-generate nonces, optional nonce-reuse debug guardrails, and capability reporting via `ESPCrypto::caps()`.
 - HMAC/HKDF/PBKDF2 APIs (SHA-256/384/512) with policy enforcement for PBKDF2 iteration counts and RSA/ECC key sizes.
 - Known-answer tests for SHA-2 variants, AES-GCM (NIST vectors), HKDF, PBKDF2, and AES-GCM auto-IV round-trips to keep regressions visible.
+- Examples split into `basic_hash_and_aes`, `jwt_and_password`, and `advanced_primitives` to cover both quick-start and full-surface flows.
 
 ### Fixed
 - CI now pins Arduino CLI to the ESP32 `2.0.17` core via Espressif's package index, preventing GitHub runners from timing out while downloading the 3.x toolchains and keeping PlatformIO/Arduino builds in sync.

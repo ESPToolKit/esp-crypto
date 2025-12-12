@@ -21,46 +21,34 @@ ESPCrypto wraps the ESP32 hardware crypto blocks (SHA, AES-GCM/CTR, RSA/ECC) wit
 - Ready-to-flash example plus Unity tests under `test/test_esp_crypto` with NIST/RFC vectors for SHA, AES-GCM, HKDF, PBKDF2, JWT, and password hashing regressions.
 
 ## Examples
-The `examples/basic_crypto` sketch shows SHA, AES-GCM, JWT, and password hashing in one go:
+- `examples/basic_hash_and_aes` – SHA plus AES-GCM with auto IV/tag handling and structured status.
+- `examples/jwt_and_password` – HS256 JWT creation/verification and password hashing/verification.
+- `examples/advanced_primitives` – Capability/policy introspection, SecureBuffer/String, HMAC/HKDF/PBKDF2, AES-CTR streaming, and RSA/ECDSA signing flows.
+
+The basic AES example shows SHA and AES-GCM in one go:
 
 ```cpp
 #include <Arduino.h>
 #include <ESPCrypto.h>
+#include <vector>
 
 void setup() {
     Serial.begin(115200);
-    String digest = ESPCrypto::shaHex("esptoolkit");
-
     std::vector<uint8_t> key(32, 0x01);
     std::vector<uint8_t> plaintext = {'h', 'e', 'l', 'l', 'o'};
+
+    String digest = ESPCrypto::shaHex("esptoolkit");
     auto gcm = ESPCrypto::aesGcmEncryptAuto(key, plaintext);
     if (gcm.ok()) {
         auto decrypted = ESPCrypto::aesGcmDecrypt(key, gcm.value.iv, gcm.value.ciphertext, gcm.value.tag);
         (void)decrypted;
     }
-
-    JsonDocument claims;
-    claims["role"] = "admin";
-    JwtSignOptions sign;
-    sign.algorithm = JwtAlgorithm::HS256;
-    sign.issuer = "esp32";
-    String jwt = ESPCrypto::createJwt(claims, "super-secret", sign);
-
-    JsonDocument decoded;
-    String error;
-    JwtVerifyOptions verify;
-    verify.algorithm = JwtAlgorithm::HS256;
-    verify.issuer = "esp32";
-    ESPCrypto::verifyJwt(jwt, "super-secret", decoded, error, verify);
-
-    String hashed = ESPCrypto::hashString("hunter2");
-    bool ok = ESPCrypto::verifyString("hunter2", hashed);
 }
 
 void loop() {}
 ```
 
-Run `examples/basic_crypto` via PlatformIO/Arduino to see the full output.
+Run `examples/basic_hash_and_aes` via PlatformIO/Arduino to see the full output.
 
 ## API Highlights
 - `CryptoResult<std::vector<uint8_t>> shaResult(...)` / `shaHex(...)` – SHA256/384/512 with optional hardware preference (default on) and structured status codes.
