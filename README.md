@@ -15,6 +15,11 @@ ESPCrypto wraps the ESP32 hardware crypto blocks (SHA, AES-GCM/CTR, RSA/ECC) wit
 - SHA256/384/512 helpers that try the ESP parallel SHA engine first and fall back to mbedTLS when the accelerator (or platform) is unavailable.
 - AES-GCM and AES-CTR utilities with a safe `aesGcmEncryptAuto` that generates a random 12-byte IV, optional nonce-reuse debug guard, and capability introspection via `ESPCrypto::caps()`.
 - RSA/ECC signing + verification helpers (PKCS#1 v1.5 + ECDSA) that power HS256/RS256/ES256 JWT flows or stand-alone signatures.
+- `CryptoKey` + `KeyHandle` abstractions with `MemoryKeyStore`, `NvsKeyStore`, and `LittleFsKeyStore` for alias/versioned key rotation plus cached mbedTLS contexts to avoid repeated parsing.
+- Device-bound HKDF helper `deriveDeviceKey(...)` that seeds from an optional persistent NVS secret and the chip fingerprint so long-term symmetric keys are not hard-coded.
+- Buffer-friendly span overloads for SHA digests and AES-GCM encrypt/decrypt that write into caller-provided buffers to reduce heap churn on large payloads, plus streaming contexts (`ShaCtx`, `HmacCtx`, `AesCtrStream`, `AesGcmCtx`) for chunked workloads.
+- Nonce strategies for AES-GCM auto IVs: random 96-bit (default), counter+random hybrid, or boot-counter based with optional NVS persistence to avoid reuse under long-lived keys.
+- Modern lanes: ChaCha20-Poly1305 for CPUs without AES accel, X25519 ECDH helper, and ECDSA DER↔raw helpers to interop with JOSE stacks. (Ed25519/EdDSA stay capability-gated to platform support.)
 - HMAC/HKDF/PBKDF2 (SHA-256/384/512) building blocks with policy enforcement for PBKDF2 iteration counts; password hashing uses these primitives and constant-time verification.
 - Structured `CryptoStatus` + `CryptoResult<T>` with span-friendly overloads to reduce heap churn and keep error handling uniform; `SecureBuffer`/`SecureString` zeroize sensitive data on scope exit.
 - Full JWT builder/validator that uses ArduinoJson v7 `JsonDocument`s, fills `iat`/`exp`/`nbf` fields, enforces issuer/audience, and exposes both friendly errors and structured status codes.
@@ -24,6 +29,9 @@ ESPCrypto wraps the ESP32 hardware crypto blocks (SHA, AES-GCM/CTR, RSA/ECC) wit
 - `examples/basic_hash_and_aes` – SHA plus AES-GCM with auto IV/tag handling and structured status.
 - `examples/jwt_and_password` – HS256 JWT creation/verification and password hashing/verification.
 - `examples/advanced_primitives` – Capability/policy introspection, SecureBuffer/String, HMAC/HKDF/PBKDF2, AES-CTR streaming, and RSA/ECDSA signing flows.
+- `examples/keys_and_streaming` – Keystore usage, streaming SHA/AES-GCM, nonce strategies, and device-bound key derivation.
+- `examples/bench_crypto` – Tiny on-device timing loops for SHA and AES-GCM to gauge perf per board.
+- `examples/jwks_rotation` – JWKS verification with rotating `kid` values for HS256.
 
 The basic AES example shows SHA and AES-GCM in one go:
 
@@ -50,16 +58,55 @@ void loop() {}
 
 Run `examples/basic_hash_and_aes` via PlatformIO/Arduino to see the full output.
 
+### Key management and device-bound helpers
+Cache parsed keys, rotate aliases, and derive symmetric keys without shipping long-lived secrets in firmware:
+
+```cpp
+#include <ESPCrypto.h>
+
+void rotate_keys() {
+    MemoryKeyStore memory;
+    KeyHandle current{String("jwt_auth"), 2};
+
+    // Store a PEM private key and reload it as a cached CryptoKey
+    const char *pem = "-----BEGIN PRIVATE KEY-----...";
+    ESPCrypto::storeKey(memory, current, CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>(pem), strlen(pem)));
+    auto loaded = ESPCrypto::loadKey(memory, current, KeyFormat::Pem, KeyKind::Private);
+    if (loaded.ok()) {
+        auto sig = ESPCrypto::rsaSign(loaded.value,
+                                      CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>("payload"), 7),
+                                      ShaVariant::SHA256);
+        (void)sig;
+    }
+
+    // Derive a device-bound symmetric key using HKDF + NVS-backed seed
+    auto derived = ESPCrypto::deriveDeviceKey("provisioning", CryptoSpan<const uint8_t>(), 32);
+    if (derived.ok()) {
+        // use derived.value as an AES or HMAC key without embedding long-term secrets
+    }
+}
+```
+
+`NvsKeyStore` persists keys with optional encrypted NVS, `LittleFsKeyStore` stores blobs on LittleFS when mounted, and `MemoryKeyStore` stays in-RAM for tests or ephemeral rotations.
+
 ## API Highlights
 - `CryptoResult<std::vector<uint8_t>> shaResult(...)` / `shaHex(...)` – SHA256/384/512 with optional hardware preference (default on) and structured status codes.
 - `CryptoResult<GcmMessage> aesGcmEncryptAuto(...)` + `aesGcmDecrypt(...)` – 128/192/256-bit AES-GCM with random IVs, optional AAD, 16-byte tags, and policy-enforced IV length; `aesCtrCrypt(...)` covers stream-like CTR use cases.
 - `CryptoResult<std::vector<uint8_t>> rsaSign/eccSign` and `rsaVerify/eccVerify` – Wrap mbedTLS PK contexts while enforcing minimum key sizes unless `allowLegacy` is enabled.
+- `CryptoKey` helpers for RSA/ECC reuse parsed PK contexts; pair them with `KeyHandle` aliases in a `KeyStore` to rotate versions without reparsing PEM/DER.
+- `CryptoResult<void> sha(...)` and `aesGcmEncrypt/Decrypt(...)` span overloads – write digests/ciphertext/tag into caller-owned buffers to avoid heap allocations on large payloads.
+- Streaming helpers: `ShaCtx`/`HmacCtx` for incremental hashing/HMAC, `AesCtrStream` for chunked CTR flows, and `AesGcmCtx` for AAD + payload streaming with tag verification.
+- `GcmNonceOptions` lets you pick random, counter+random, or boot-counter IV strategies (with optional NVS persistence) when using `aesGcmEncryptAuto(...)`.
+- JWT additions: JWK/JWKS verification helper, leeway support, multi-audience/typ enforcement, and DER↔raw ECDSA helpers to match JOSE encodings.
+- ChaCha20-Poly1305 encrypt/decrypt helpers and X25519 shared-secret derivation for devices where AES accel varies. XChaCha20-Poly1305 and Ed25519/EdDSA APIs currently return `Unsupported` until the toolchain provides those primitives.
 - `CryptoResult<String> createJwtResult(...)` / `verifyJwtResult(...)` – Build HS256/RS256/ES256 JWTs with auto `iat`/`exp` fields and get back structured status plus the friendly error string versions.
 - `CryptoResult<std::vector<uint8_t>> hmac/hkdf/pbkdf2` and `hashString`/`verifyString` – HMAC/HKDF/PBKDF2 building blocks; password hashes stay in the `$esphash$v1$cost$salt$hash` envelope and compare in constant time.
 - `CryptoCaps caps()` and `SecureBuffer`/`SecureString` – Introspect hardware acceleration availability and zeroize sensitive buffers on scope exit.
 
 ## JWT Helpers
 `JwtSignOptions` lets you set `issuer`, `subject`, `audience`, `expiresInSeconds`, `notBefore`, `issuedAt`, and `keyId`. `JwtVerifyOptions` can enforce issuer/audience matches, require expiration, and accept externally supplied clocks (e.g., SNTP time). Header/payload data stays as ArduinoJson v7 `JsonDocument`s, so you can merge them with `doc.set(...)` or stream them over serial for debugging. Use `createJwt`/`verifyJwt` for friendly strings or `createJwtResult`/`verifyJwtResult` for structured status codes.
+
+`verifyJwtWithJwks` consumes an in-memory JWKS (`JsonDocument`) and picks keys by `kid`, with support for leeway, multi-audience payloads, `typ` enforcement, and `crit` header allowlists. ECDSA raw/DER conversion helpers are available when interoping with JOSE stacks that send compact raw signatures.
 
 ## Policy & Guardrails
 - `CryptoPolicy` (default: RSA ≥ 2048 bits, PBKDF2 iterations ≥ 1024, GCM IV ≥ 12 bytes) is readable via `ESPCrypto::policy()` and adjustable with `setPolicy(...)`; set `allowLegacy = true` to opt into weaker parameters.

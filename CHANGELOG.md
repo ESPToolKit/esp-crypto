@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `CryptoKey` + `KeyHandle` abstractions with cached mbedTLS contexts and `MemoryKeyStore`/`NvsKeyStore`/`LittleFsKeyStore` helpers for alias+versioned key rotation.
+- `deriveDeviceKey(...)` HKDF helper seeded from a device fingerprint and optional NVS-backed seed so symmetric keys are device-bound instead of hard-coded.
+- No-allocation SHA/AES-GCM overloads that write into caller-owned spans (`CryptoSpan`) to reduce heap churn when hashing or encrypting large payloads.
+- Streaming contexts (`ShaCtx`, `HmacCtx`, `AesCtrStream`, `AesGcmCtx`) for chunked hashing/HMAC and AES-CTR/GCM flows.
+- AES-GCM nonce strategies (random96 default, counter+random, boot-counter+random) with optional NVS-persisted counters via `GcmNonceOptions`.
+- JWK/JWKS verification helper (`verifyJwtWithJwks`) with leeway, multi-audience, typ/crit enforcement, and ECDSA DER↔raw helpers for JOSE interop.
+- ChaCha20-Poly1305 encrypt/decrypt and X25519 shared-secret helper (capability-gated); XChaCha20-Poly1305 and Ed25519/EdDSA APIs are present but return `Unsupported` until a backend is available.
+- New examples: keystore/streaming demo, JWKS rotation, and micro-benchmarks for SHA/AES-GCM.
 - Planned curve25519 helpers once ESP-IDF exposes hardware accel hooks.
 - `SecureBuffer`/`SecureString` RAII containers that zeroize sensitive material, plus `CryptoStatus`/`CryptoResult` and span-based overloads for SHA, AES, JWT, signing, and password helpers.
 - AES-GCM safe helpers that auto-generate nonces, optional nonce-reuse debug guardrails, and capability reporting via `ESPCrypto::caps()`.

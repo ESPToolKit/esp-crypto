@@ -106,6 +106,165 @@ void test_jwt_roundtrip_hs256() {
     TEST_ASSERT_EQUAL_STRING("demo", decoded["scope"].as<const char *>());
 }
 
+void test_sha_ctx_streaming() {
+    ShaCtx ctx;
+    TEST_ASSERT_TRUE(ctx.begin(ShaVariant::SHA256).ok());
+    const char *chunk1 = "ab";
+    const char *chunk2 = "c";
+    TEST_ASSERT_TRUE(ctx.update(CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>(chunk1), 2)).ok());
+    TEST_ASSERT_TRUE(ctx.update(CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>(chunk2), 1)).ok());
+    std::vector<uint8_t> out(32, 0);
+    TEST_ASSERT_TRUE(ctx.finish(CryptoSpan<uint8_t>(out)).ok());
+    const uint8_t expected[] = {0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+                                0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
+    TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(out, std::vector<uint8_t>(expected, expected + sizeof(expected))));
+}
+
+void test_aes_ctr_stream_roundtrip() {
+    std::vector<uint8_t> key(16, 0x00);
+    std::vector<uint8_t> nonce(16, 0x01);
+    std::vector<uint8_t> plaintext = {0x10, 0x20, 0x30, 0x40};
+    std::vector<uint8_t> ciphertext(plaintext.size(), 0);
+    std::vector<uint8_t> decrypted(plaintext.size(), 0);
+
+    AesCtrStream enc;
+    TEST_ASSERT_TRUE(enc.begin(key, CryptoSpan<const uint8_t>(nonce)).ok());
+    TEST_ASSERT_TRUE(enc.update(CryptoSpan<const uint8_t>(plaintext), CryptoSpan<uint8_t>(ciphertext)).ok());
+
+    AesCtrStream dec;
+    TEST_ASSERT_TRUE(dec.begin(key, CryptoSpan<const uint8_t>(nonce)).ok());
+    TEST_ASSERT_TRUE(dec.update(CryptoSpan<const uint8_t>(ciphertext), CryptoSpan<uint8_t>(decrypted)).ok());
+    TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(plaintext, decrypted));
+}
+
+void test_aes_gcm_ctx_roundtrip() {
+    std::vector<uint8_t> key(16, 0x33);
+    std::vector<uint8_t> iv(12, 0x44);
+    std::vector<uint8_t> aad = {0x01, 0x02};
+    std::vector<uint8_t> plaintext = {0x0A, 0x0B, 0x0C, 0x0D};
+    std::vector<uint8_t> ciphertext(plaintext.size(), 0);
+    std::vector<uint8_t> tag(16, 0);
+
+    AesGcmCtx enc;
+    TEST_ASSERT_TRUE(enc.beginEncrypt(key, CryptoSpan<const uint8_t>(iv), CryptoSpan<const uint8_t>(aad)).ok());
+    TEST_ASSERT_TRUE(enc.update(CryptoSpan<const uint8_t>(plaintext), CryptoSpan<uint8_t>(ciphertext)).ok());
+    TEST_ASSERT_TRUE(enc.finish(CryptoSpan<uint8_t>(tag)).ok());
+
+    std::vector<uint8_t> decrypted(plaintext.size(), 0);
+    AesGcmCtx dec;
+    TEST_ASSERT_TRUE(dec.beginDecrypt(key, CryptoSpan<const uint8_t>(iv), CryptoSpan<const uint8_t>(aad), CryptoSpan<const uint8_t>(tag)).ok());
+    TEST_ASSERT_TRUE(dec.update(CryptoSpan<const uint8_t>(ciphertext), CryptoSpan<uint8_t>(decrypted)).ok());
+    TEST_ASSERT_TRUE(dec.finish(CryptoSpan<uint8_t>(tag)).ok());
+    TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(plaintext, decrypted));
+}
+
+void test_gcm_nonce_strategy_counter() {
+    std::vector<uint8_t> key(16, 0x55);
+    std::vector<uint8_t> plaintext = {0xAA, 0xBB};
+    GcmNonceOptions opts;
+    opts.strategy = GcmNonceStrategy::Counter64_Random32;
+    auto first = ESPCrypto::aesGcmEncryptAuto(key, plaintext, {}, 12, opts);
+    auto second = ESPCrypto::aesGcmEncryptAuto(key, plaintext, {}, 12, opts);
+    TEST_ASSERT_TRUE(first.ok());
+    TEST_ASSERT_TRUE(second.ok());
+    TEST_ASSERT_EQUAL_UINT32(12, first.value.iv.size());
+    TEST_ASSERT_EQUAL_UINT32(12, second.value.iv.size());
+    TEST_ASSERT_FALSE(ESPCrypto::constantTimeEq(first.value.iv, second.value.iv));
+}
+
+void test_chacha20poly1305_roundtrip() {
+    std::vector<uint8_t> key(32, 0x01);
+    std::vector<uint8_t> nonce(12, 0x02);
+    std::vector<uint8_t> aad = {0x03, 0x04};
+    std::vector<uint8_t> plaintext = {0x10, 0x20, 0x30};
+    auto enc = ESPCrypto::chacha20Poly1305Encrypt(CryptoSpan<const uint8_t>(key),
+                                                  CryptoSpan<const uint8_t>(nonce),
+                                                  CryptoSpan<const uint8_t>(aad),
+                                                  CryptoSpan<const uint8_t>(plaintext));
+    TEST_ASSERT_TRUE_MESSAGE(enc.ok(), enc.status.message.c_str());
+    auto dec = ESPCrypto::chacha20Poly1305Decrypt(CryptoSpan<const uint8_t>(key),
+                                                  CryptoSpan<const uint8_t>(nonce),
+                                                  CryptoSpan<const uint8_t>(aad),
+                                                  CryptoSpan<const uint8_t>(enc.value));
+    TEST_ASSERT_TRUE_MESSAGE(dec.ok(), dec.status.message.c_str());
+    TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(plaintext, dec.value));
+}
+
+void test_ecdsa_raw_der_roundtrip() {
+    std::vector<uint8_t> raw(64, 0);
+    for (size_t i = 0; i < raw.size(); ++i) raw[i] = static_cast<uint8_t>(i + 1);
+    auto der = ESPCrypto::ecdsaRawToDer(CryptoSpan<const uint8_t>(raw));
+    TEST_ASSERT_TRUE_MESSAGE(der.ok(), der.status.message.c_str());
+    auto rawBack = ESPCrypto::ecdsaDerToRaw(CryptoSpan<const uint8_t>(der.value));
+    TEST_ASSERT_TRUE_MESSAGE(rawBack.ok(), rawBack.status.message.c_str());
+    TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(raw, rawBack.value));
+}
+
+void test_aes_gcm_span_roundtrip() {
+    std::vector<uint8_t> key(16, 0x11);
+    std::vector<uint8_t> iv(12, 0x22);
+    std::vector<uint8_t> plaintext = {0xAA, 0xBB, 0xCC, 0xDD};
+    std::vector<uint8_t> ciphertext(plaintext.size(), 0);
+    std::vector<uint8_t> tag(16, 0);
+
+    auto enc = ESPCrypto::aesGcmEncrypt(key,
+                                        CryptoSpan<const uint8_t>(iv),
+                                        CryptoSpan<const uint8_t>(plaintext),
+                                        CryptoSpan<uint8_t>(ciphertext),
+                                        CryptoSpan<uint8_t>(tag));
+    TEST_ASSERT_TRUE_MESSAGE(enc.ok(), enc.status.message.c_str());
+
+    std::vector<uint8_t> decrypted(plaintext.size(), 0);
+    auto dec = ESPCrypto::aesGcmDecrypt(key,
+                                        CryptoSpan<const uint8_t>(iv),
+                                        CryptoSpan<const uint8_t>(ciphertext),
+                                        CryptoSpan<const uint8_t>(tag),
+                                        CryptoSpan<uint8_t>(decrypted));
+    TEST_ASSERT_TRUE_MESSAGE(dec.ok(), dec.status.message.c_str());
+    TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(plaintext, decrypted));
+}
+
+void test_device_key_is_stable() {
+    auto first = ESPCrypto::deriveDeviceKey("unity-device-key", CryptoSpan<const uint8_t>(), 32);
+    auto second = ESPCrypto::deriveDeviceKey("unity-device-key", CryptoSpan<const uint8_t>(), 32);
+    TEST_ASSERT_TRUE_MESSAGE(first.ok(), first.status.message.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(second.ok(), second.status.message.c_str());
+    TEST_ASSERT_EQUAL_UINT32(32, first.value.size());
+    TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(first.value, second.value));
+}
+
+void test_jwt_and_envelope_fuzz() {
+    const char *badTokens[] = {"", "abc", "a.b", "a.b.c", "e30=.e30=.@@@@", "eyJhbGciOiJIUzI1NiJ9.e30.bad"};
+    JsonDocument out;
+    String err;
+    JwtVerifyOptions opts;
+    opts.algorithm = JwtAlgorithm::HS256;
+    for (auto t : badTokens) {
+        TEST_ASSERT_FALSE(ESPCrypto::verifyJwt(String(t), "secret", out, err, opts));
+    }
+    TEST_ASSERT_FALSE(ESPCrypto::verifyString("pw", "$esphash$v1$bad$bad$bad"));
+}
+
+void test_jwks_verification() {
+    // Build HS256 token and JWKS with oct key
+    JsonDocument claims;
+    claims["iss"] = "jwks";
+    JwtSignOptions signOpts;
+    signOpts.algorithm = JwtAlgorithm::HS256;
+    signOpts.expiresInSeconds = 60;
+    signOpts.keyId = "k1";
+    String token = ESPCrypto::createJwt(claims, "supersecret", signOpts);
+    JsonDocument jwks;
+    JsonArray keys = jwks["keys"].to<JsonArray>();
+    JsonObject k = keys.add<JsonObject>();
+    k["kty"] = "oct";
+    k["kid"] = "k1";
+    k["k"] = "c3VwZXJzZWNyZXQ"; // base64url("supersecret")
+    JsonDocument decoded;
+    auto res = ESPCrypto::verifyJwtWithJwks(token, jwks, decoded);
+    TEST_ASSERT_TRUE_MESSAGE(res.ok(), res.status.message.c_str());
+    TEST_ASSERT_EQUAL_STRING("jwks", decoded["iss"].as<const char *>());
+}
 void setUp() {}
 void tearDown() {}
 
@@ -114,12 +273,21 @@ void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_sha_hex_matches_known_value);
     RUN_TEST(test_sha_known_vectors);
+    RUN_TEST(test_sha_ctx_streaming);
     RUN_TEST(test_password_hash_roundtrip);
     RUN_TEST(test_aes_gcm_known_vector);
     RUN_TEST(test_aes_gcm_auto_iv_roundtrip);
+    RUN_TEST(test_aes_gcm_span_roundtrip);
+    RUN_TEST(test_aes_ctr_stream_roundtrip);
+    RUN_TEST(test_aes_gcm_ctx_roundtrip);
+    RUN_TEST(test_gcm_nonce_strategy_counter);
+    RUN_TEST(test_chacha20poly1305_roundtrip);
+    RUN_TEST(test_ecdsa_raw_der_roundtrip);
     RUN_TEST(test_hkdf_rfc5869_case1);
     RUN_TEST(test_pbkdf2_vector);
     RUN_TEST(test_jwt_roundtrip_hs256);
+    RUN_TEST(test_jwt_and_envelope_fuzz);
+    RUN_TEST(test_device_key_is_stable);
     UNITY_END();
 }
 
