@@ -66,6 +66,12 @@ Run `examples/basic_hash_and_aes` via PlatformIO/Arduino to see the full output.
 - AES-GCM can enable debug nonce-reuse detection via `ESPCRYPTO_ENABLE_NONCE_GUARD` (tiny LRU cache keyed by IV + key fingerprint).
 - `constantTimeEq` and `SecureBuffer`/`SecureString` keep comparisons and cleanup timing-safe.
 
+## Security Posture
+- Constant-time coverage: `constantTimeEq` underpins password verification and HS256 JWT checks; other primitives lean on ESP-IDF/mbedTLS implementations and should be treated as best-effort constant-time rather than hardened side-channel countermeasures.
+- Hardware acceleration: SHA, AES-CTR, and AES-GCM try the ESP hardware blocks first and fall back to mbedTLS software paths; `ESPCrypto::caps()` reports what is active at runtime. Random bytes come from `esp_fill_random` on-device and from `std::random_device` only for host builds/tests.
+- Best-effort hardening: password hashes stay in a structured envelope with policy-enforced PBKDF2 costs, AES-GCM enforces IV length and offers an optional nonce-reuse guard, and sensitive buffers zeroize on scope exit or failure paths.
+- Threat model: aimed at network-connected ESP32-class devices where attackers can send arbitrary inputs. It does not attempt to defend against physical capture, power/EM/fault-injection side channels, or secure element/key storage requirements; review your board’s secure boot/flash encryption story separately.
+
 ## Password Hashing
 `hashString` emits `$esphash$v1$<cost>$<salt>$<hash>` so you can persist passwords without storing secrets. Costs map to `2^cost` PBKDF2 iterations (default 10 ⇒ 1024) and will auto-bump to the policy minimum iteration count unless `allowLegacy` is enabled. `verifyString` accepts any string in that envelope, decodes the salt/hash, replays PBKDF2, and compares in constant time.
 
