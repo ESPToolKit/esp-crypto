@@ -75,6 +75,17 @@ struct CryptoSpan {
     CryptoSpan(pointer data, size_t size) : ptr(data), len(size) {}
     CryptoSpan(std::vector<typename std::remove_const<T>::type> &vec) : ptr(vec.data()), len(vec.size()) {}
     CryptoSpan(const std::vector<typename std::remove_const<T>::type> &vec) : ptr(vec.data()), len(vec.size()) {}
+#if defined(__cpp_lib_array_constexpr) || __cpp_lib_array_constexpr >= 201803L
+    template <size_t N, typename U = T, typename std::enable_if<!std::is_const<U>::value, int>::type = 0>
+    constexpr CryptoSpan(U (&arr)[N]) : ptr(arr), len(N) {}
+    template <size_t N, typename U = T, typename std::enable_if<std::is_const<U>::value, int>::type = 0>
+    constexpr CryptoSpan(const typename std::remove_const<U>::type (&arr)[N]) : ptr(arr), len(N) {}
+#else
+    template <size_t N, typename U = T, typename std::enable_if<!std::is_const<U>::value, int>::type = 0>
+    CryptoSpan(U (&arr)[N]) : ptr(arr), len(N) {}
+    template <size_t N, typename U = T, typename std::enable_if<std::is_const<U>::value, int>::type = 0>
+    CryptoSpan(const typename std::remove_const<U>::type (&arr)[N]) : ptr(arr), len(N) {}
+#endif
 #if ESPCRYPTO_HAS_STD_SPAN
     CryptoSpan(std::span<T> span) : ptr(span.data()), len(span.size()) {}
 #endif
