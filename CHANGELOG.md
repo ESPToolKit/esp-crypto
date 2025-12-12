@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [1.0.1] - 2026-01-15
+
 ### Added
 - `CryptoKey` + `KeyHandle` abstractions with cached mbedTLS contexts and `MemoryKeyStore`/`NvsKeyStore`/`LittleFsKeyStore` helpers for alias+versioned key rotation.
 - `deriveDeviceKey(...)` HKDF helper seeded from a device fingerprint and optional NVS-backed seed so symmetric keys are device-bound instead of hard-coded.
