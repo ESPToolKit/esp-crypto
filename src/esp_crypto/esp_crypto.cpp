@@ -50,7 +50,6 @@ extern "C" {
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
-#include "esp_efuse_mac.h"
 #if defined(__has_include)
 #if __has_include("esp_mac.h")
 #include "esp_mac.h"
@@ -78,9 +77,8 @@ extern "C" {
 #define ESPCRYPTO_AES_GCM_ACCEL 1
 #endif
 #else
-#include "esp_efuse_mac.h"
 #define ESPCRYPTO_HAS_ESP_MAC 0
-#define ESPCRYPTO_HAS_ESP_EFUSE_MAC 1
+#define ESPCRYPTO_HAS_ESP_EFUSE_MAC 0
 #endif
 }
 #include <sys/time.h>
