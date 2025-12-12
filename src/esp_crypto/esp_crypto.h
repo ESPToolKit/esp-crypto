@@ -185,6 +185,17 @@ struct DeviceKeyOptions {
     size_t seedBytes = 32;
 };
 
+enum class ShaVariant {
+    SHA256,
+    SHA384,
+    SHA512
+};
+
+struct ShaOptions {
+    ShaVariant variant = ShaVariant::SHA256;
+    bool preferHardware = true;
+};
+
 enum class GcmNonceStrategy {
     Random96,
     Counter64_Random32,
@@ -308,17 +319,6 @@ class SecureString {
    private:
     void wipe();
     std::string value;
-};
-
-enum class ShaVariant {
-    SHA256,
-    SHA384,
-    SHA512
-};
-
-struct ShaOptions {
-    ShaVariant variant = ShaVariant::SHA256;
-    bool preferHardware = true;
 };
 
 enum class JwtAlgorithm {
