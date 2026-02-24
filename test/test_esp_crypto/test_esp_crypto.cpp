@@ -4,6 +4,38 @@
 #include <cstring>
 #include <vector>
 
+void test_teardown_preinit_and_idempotent() {
+    ESPCrypto::deinit();
+    TEST_ASSERT_FALSE(ESPCrypto::isInitialized());
+
+    ESPCrypto::deinit();
+    TEST_ASSERT_FALSE(ESPCrypto::isInitialized());
+}
+
+void test_teardown_reinit_lifecycle() {
+    ESPCrypto::deinit();
+    TEST_ASSERT_FALSE(ESPCrypto::isInitialized());
+
+    CryptoPolicy customPolicy = ESPCrypto::policy();
+    customPolicy.minPbkdf2Iterations = 4096;
+    ESPCrypto::setPolicy(customPolicy);
+    TEST_ASSERT_TRUE(ESPCrypto::isInitialized());
+    TEST_ASSERT_EQUAL_UINT32(4096, ESPCrypto::policy().minPbkdf2Iterations);
+
+    ESPCrypto::deinit();
+    TEST_ASSERT_FALSE(ESPCrypto::isInitialized());
+    TEST_ASSERT_EQUAL_UINT32(1024, ESPCrypto::policy().minPbkdf2Iterations);
+
+    std::vector<uint8_t> key(16, 0x5A);
+    std::vector<uint8_t> plaintext = {0x01, 0x02, 0x03};
+    auto enc = ESPCrypto::aesGcmEncryptAuto(key, plaintext);
+    TEST_ASSERT_TRUE_MESSAGE(enc.ok(), enc.status.message.c_str());
+    TEST_ASSERT_TRUE(ESPCrypto::isInitialized());
+
+    ESPCrypto::deinit();
+    TEST_ASSERT_FALSE(ESPCrypto::isInitialized());
+}
+
 void test_sha_hex_matches_known_value() {
     const char *data = "hello world";
     String digest = ESPCrypto::shaHex(reinterpret_cast<const uint8_t *>(data), strlen(data));
@@ -271,6 +303,8 @@ void tearDown() {}
 void setup() {
     delay(2000);
     UNITY_BEGIN();
+    RUN_TEST(test_teardown_preinit_and_idempotent);
+    RUN_TEST(test_teardown_reinit_lifecycle);
     RUN_TEST(test_sha_hex_matches_known_value);
     RUN_TEST(test_sha_known_vectors);
     RUN_TEST(test_sha_ctx_streaming);

@@ -407,6 +407,9 @@ struct GcmMessage {
 
 class ESPCrypto {
    public:
+    static void deinit();
+    static bool isInitialized();
+
     static void setPolicy(const CryptoPolicy &policy);
     static CryptoPolicy policy();
     static CryptoCaps caps();
