@@ -52,12 +52,21 @@ void setup() {
         auto decrypted = ESPCrypto::aesGcmDecrypt(key, gcm.value.iv, gcm.value.ciphertext, gcm.value.tag);
         (void)decrypted;
     }
+
+    // Release ESPCrypto runtime caches/state before deep sleep or shutdown paths.
+    ESPCrypto::deinit();
 }
 
 void loop() {}
 ```
 
 Run `examples/basic_hash_and_aes` via PlatformIO/Arduino to see the full output.
+
+## Lifecycle and Teardown
+- `ESPCrypto` is static-style, so there is no instance destructor to release global runtime state.
+- Call `ESPCrypto::deinit()` when your app no longer needs crypto helpers (for example before deep sleep, app shutdown, or full subsystem restart).
+- `deinit()` is safe before any crypto call and safe to call repeatedly.
+- Use `ESPCrypto::isInitialized()` to check whether runtime state (policy/caches/counters) is currently active.
 
 ### Key management and device-bound helpers
 Cache parsed keys, rotate aliases, and derive symmetric keys without shipping long-lived secrets in firmware:

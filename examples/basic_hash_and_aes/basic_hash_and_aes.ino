@@ -28,6 +28,7 @@ void setup() {
     auto encrypted = ESPCrypto::aesGcmEncryptAuto(key, plaintext);
     if (!encrypted.ok()) {
         Serial.printf("GCM encrypt failed: %s\n", toString(encrypted.status.code));
+        ESPCrypto::deinit();
         return;
     }
     Serial.printf("GCM IV: %s\n", bytesToHex(encrypted.value.iv).c_str());
@@ -37,10 +38,14 @@ void setup() {
     auto decrypted = ESPCrypto::aesGcmDecrypt(key, encrypted.value.iv, encrypted.value.ciphertext, encrypted.value.tag);
     if (!decrypted.ok()) {
         Serial.printf("GCM decrypt failed: %s\n", toString(decrypted.status.code));
+        ESPCrypto::deinit();
         return;
     }
     Serial.printf("GCM plaintext recovered: %s\n",
                   String(reinterpret_cast<const char *>(decrypted.value.data()), decrypted.value.size()).c_str());
+
+    // Explicit teardown for static runtime resources/caches.
+    ESPCrypto::deinit();
 }
 
 void loop() {

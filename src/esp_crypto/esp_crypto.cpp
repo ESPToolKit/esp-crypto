@@ -151,6 +151,39 @@ struct NonceRecord {
     bool used = false;
 };
 
+struct GlobalRuntimeState {
+    std::atomic<bool> initialized{false};
+    std::map<std::string, bool> nvsInitMap;
+#if ESPCRYPTO_ENABLE_NONCE_GUARD
+    std::array<NonceRecord, ESPCRYPTO_NONCE_GUARD_CACHE> nonceCache = {};
+    size_t nonceCursor = 0;
+#endif
+    std::atomic<uint64_t> bootCounter{0};
+};
+
+GlobalRuntimeState &runtimeState() {
+    static GlobalRuntimeState state;
+    return state;
+}
+
+void markRuntimeInitialized() {
+    runtimeState().initialized.store(true, std::memory_order_release);
+}
+
+void resetRuntimeState() {
+    GlobalRuntimeState &state = runtimeState();
+    state.nvsInitMap.clear();
+#if ESPCRYPTO_ENABLE_NONCE_GUARD
+    for (auto &record : state.nonceCache) {
+        record = NonceRecord{};
+    }
+    state.nonceCursor = 0;
+#endif
+    state.bootCounter.store(0, std::memory_order_release);
+    mutablePolicy() = CryptoPolicy{};
+    state.initialized.store(false, std::memory_order_release);
+}
+
 uint32_t fingerprintKey(const std::vector<uint8_t> &key) {
     uint32_t hash = 2166136261u;
     for (uint8_t b : key) {
@@ -162,13 +195,13 @@ uint32_t fingerprintKey(const std::vector<uint8_t> &key) {
 
 bool nonceReused(const std::vector<uint8_t> &key, const std::vector<uint8_t> &iv) {
 #if ESPCRYPTO_ENABLE_NONCE_GUARD
-    static std::array<NonceRecord, ESPCRYPTO_NONCE_GUARD_CACHE> cache;
-    static size_t cursor = 0;
-    if (iv.empty() || iv.size() > cache[0].iv.size()) {
+    GlobalRuntimeState &state = runtimeState();
+    if (iv.empty() || iv.size() > state.nonceCache[0].iv.size()) {
         return false;
     }
+    markRuntimeInitialized();
     uint32_t keyHash = fingerprintKey(key);
-    for (const auto &record : cache) {
+    for (const auto &record : state.nonceCache) {
         if (!record.used || record.ivLen != iv.size()) {
             continue;
         }
@@ -179,12 +212,12 @@ bool nonceReused(const std::vector<uint8_t> &key, const std::vector<uint8_t> &iv
             return true;
         }
     }
-    NonceRecord &slot = cache[cursor % cache.size()];
+    NonceRecord &slot = state.nonceCache[state.nonceCursor % state.nonceCache.size()];
     slot.used = true;
     slot.keyHash = keyHash;
     slot.ivLen = iv.size();
     memcpy(slot.iv.data(), iv.data(), iv.size());
-    cursor++;
+    state.nonceCursor++;
 #else
     (void)key;
     (void)iv;
@@ -816,6 +849,7 @@ CryptoStatusDetail AesGcmCtx::beginCommon(const std::vector<uint8_t> &key,
     if (!aesKeyValid(key) || iv.empty()) {
         return makeStatus(CryptoStatus::InvalidInput, "invalid key or iv");
     }
+    markRuntimeInitialized();
     const CryptoPolicy &policy = mutablePolicy();
     if (!policy.allowLegacy && iv.size() < policy.minAesGcmIvBytes) {
         return makeStatus(CryptoStatus::PolicyViolation, "iv too short");
@@ -902,9 +936,10 @@ std::string handleKeyString(const KeyHandle &handle) {
 
 bool ensureNvsReady(const String &partition) {
 #if defined(ESP_PLATFORM)
-    static std::map<std::string, bool> initMap;
-    auto it = initMap.find(partition.c_str());
-    if (it != initMap.end() && it->second) {
+    GlobalRuntimeState &state = runtimeState();
+    auto it = state.nvsInitMap.find(partition.c_str());
+    if (it != state.nvsInitMap.end() && it->second) {
+        markRuntimeInitialized();
         return true;
     }
     esp_err_t err = nvs_flash_init_partition(partition.c_str());
@@ -913,7 +948,10 @@ bool ensureNvsReady(const String &partition) {
         err = nvs_flash_init_partition(partition.c_str());
     }
     bool ok = (err == ESP_OK);
-    initMap[partition.c_str()] = ok;
+    state.nvsInitMap[partition.c_str()] = ok;
+    if (ok) {
+        markRuntimeInitialized();
+    }
     return ok;
 #else
     (void)partition;
@@ -1591,6 +1629,7 @@ bool pkPolicyAllows(mbedtls_pk_context &pk, mbedtls_pk_type_t expected) {
     if (!mbedtls_pk_can_do(&pk, expected)) {
         return false;
     }
+    markRuntimeInitialized();
     const CryptoPolicy &policy = mutablePolicy();
     size_t bitlen = mbedtls_pk_get_bitlen(&pk);
     if (!policy.allowLegacy) {
@@ -1928,6 +1967,7 @@ CryptoStatusDetail aesGcmEncryptSpan(const std::vector<uint8_t> &key,
     if (!aesKeyValid(key) || iv.empty()) {
         return makeStatus(CryptoStatus::InvalidInput, "invalid key or iv");
     }
+    markRuntimeInitialized();
     const CryptoPolicy &policy = mutablePolicy();
     if (!policy.allowLegacy && iv.size() < policy.minAesGcmIvBytes) {
         return makeStatus(CryptoStatus::PolicyViolation, "iv too short");
@@ -1967,6 +2007,7 @@ CryptoStatusDetail aesGcmDecryptSpan(const std::vector<uint8_t> &key,
     if (!aesKeyValid(key) || iv.empty() || tag.size() != AES_GCM_TAG_BYTES) {
         return makeStatus(CryptoStatus::InvalidInput, "invalid key/iv/tag");
     }
+    markRuntimeInitialized();
     const CryptoPolicy &policy = mutablePolicy();
     if (!policy.allowLegacy && iv.size() < policy.minAesGcmIvBytes) {
         return makeStatus(CryptoStatus::PolicyViolation, "iv too short");
@@ -2145,10 +2186,19 @@ void SecureString::wipe() {
 
 void ESPCrypto::setPolicy(const CryptoPolicy &policy) {
     mutablePolicy() = policy;
+    markRuntimeInitialized();
 }
 
 CryptoPolicy ESPCrypto::policy() {
     return mutablePolicy();
+}
+
+void ESPCrypto::deinit() {
+    resetRuntimeState();
+}
+
+bool ESPCrypto::isInitialized() {
+    return runtimeState().initialized.load(std::memory_order_acquire);
 }
 
 CryptoCaps ESPCrypto::caps() {
@@ -2369,6 +2419,7 @@ CryptoResult<GcmMessage> ESPCrypto::aesGcmEncryptAuto(const std::vector<uint8_t>
                                                       size_t ivLength,
                                                       const GcmNonceOptions &nonceOptions) {
     CryptoResult<GcmMessage> result;
+    markRuntimeInitialized();
     const CryptoPolicy &policy = mutablePolicy();
     if (ivLength == 0) {
         ivLength = policy.minAesGcmIvBytes;
@@ -2382,9 +2433,9 @@ CryptoResult<GcmMessage> ESPCrypto::aesGcmEncryptAuto(const std::vector<uint8_t>
         return result;
     }
     result.value.iv.assign(ivLength, 0);
+    GlobalRuntimeState &state = runtimeState();
     uint32_t keyHash = fingerprintKey(key);
-    static std::atomic<uint64_t> bootCounter{0};
-    bootCounter.fetch_add(1, std::memory_order_relaxed);
+    state.bootCounter.fetch_add(1, std::memory_order_relaxed);
     switch (nonceOptions.strategy) {
         case GcmNonceStrategy::Random96:
         default:
@@ -2420,7 +2471,7 @@ CryptoResult<GcmMessage> ESPCrypto::aesGcmEncryptAuto(const std::vector<uint8_t>
                 result.status = makeStatus(CryptoStatus::PolicyViolation, "counter strategy needs >=12 iv bytes");
                 return result;
             }
-            uint64_t counter = bootCounter.load(std::memory_order_relaxed);
+            uint64_t counter = state.bootCounter.load(std::memory_order_relaxed);
             for (int i = 0; i < 8 && i < static_cast<int>(ivLength); ++i) {
                 result.value.iv[i] = static_cast<uint8_t>((counter >> (56 - 8 * i)) & 0xFF);
             }
@@ -3005,6 +3056,7 @@ CryptoResult<String> ESPCrypto::hashStringResult(const String &input, const Pass
     fillRandom(salt.data(), salt.size());
     uint8_t cost = std::min<uint8_t>(options.cost, 31);
     uint32_t iterations = 1u << cost;
+    markRuntimeInitialized();
     const CryptoPolicy &policy = mutablePolicy();
     if (!policy.allowLegacy && iterations < policy.minPbkdf2Iterations) {
         uint8_t adjustedCost = cost;
@@ -3051,6 +3103,7 @@ CryptoResult<void> ESPCrypto::verifyStringResult(const String &input, const Stri
         return result;
     }
     uint32_t iterations = 1u << cost;
+    markRuntimeInitialized();
     const CryptoPolicy &policy = mutablePolicy();
     if (!policy.allowLegacy && iterations < policy.minPbkdf2Iterations) {
         result.status = makeStatus(CryptoStatus::PolicyViolation, "pbkdf2 iterations below policy");
@@ -3167,6 +3220,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::pbkdf2(const String &password,
         result.status = makeStatus(CryptoStatus::InvalidInput, "missing password/salt/len");
         return result;
     }
+    markRuntimeInitialized();
     const CryptoPolicy &policy = mutablePolicy();
     if (!policy.allowLegacy && iterations < policy.minPbkdf2Iterations) {
         result.status = makeStatus(CryptoStatus::PolicyViolation, "iterations below policy");
