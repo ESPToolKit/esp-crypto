@@ -663,6 +663,12 @@ ShaCtx::~ShaCtx() {
 }
 
 CryptoStatusDetail ShaCtx::begin(ShaVariant variant, bool /*preferHardware*/) {
+    // Reset any prior digest allocation so repeated begin() calls do not leak.
+    mbedtls_md_free(&ctx);
+    mbedtls_md_init(&ctx);
+    started = false;
+    info = nullptr;
+
     info = mdInfoForVariant(variant);
     if (!info) {
         return makeStatus(CryptoStatus::InvalidInput, "invalid sha variant");
@@ -714,6 +720,12 @@ HmacCtx::~HmacCtx() {
 }
 
 CryptoStatusDetail HmacCtx::begin(ShaVariant variant, CryptoSpan<const uint8_t> key) {
+    // Reset any prior digest/HMAC allocation so repeated begin() calls do not leak.
+    mbedtls_md_free(&ctx);
+    mbedtls_md_init(&ctx);
+    started = false;
+    info = nullptr;
+
     info = mdInfoForVariant(variant);
     if (!info || key.empty()) {
         return makeStatus(CryptoStatus::InvalidInput, "invalid hmac params");

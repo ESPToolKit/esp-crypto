@@ -152,6 +152,53 @@ void test_sha_ctx_streaming() {
     TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(out, std::vector<uint8_t>(expected, expected + sizeof(expected))));
 }
 
+void test_sha_ctx_rebegin_reuses_context() {
+    ShaCtx ctx;
+    const char *input = "abc";
+
+    std::vector<uint8_t> sha256(32, 0);
+    TEST_ASSERT_TRUE(ctx.begin(ShaVariant::SHA256).ok());
+    TEST_ASSERT_TRUE(ctx.update(CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>(input), 3)).ok());
+    TEST_ASSERT_TRUE(ctx.finish(CryptoSpan<uint8_t>(sha256)).ok());
+
+    std::vector<uint8_t> sha512(64, 0);
+    TEST_ASSERT_TRUE(ctx.begin(ShaVariant::SHA512).ok());
+    TEST_ASSERT_TRUE(ctx.update(CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>(input), 3)).ok());
+    TEST_ASSERT_TRUE(ctx.finish(CryptoSpan<uint8_t>(sha512)).ok());
+
+    const uint8_t expectedSha256[] = {
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+        0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
+    const uint8_t expectedSha512[] = {
+        0xdd, 0xaf, 0x35, 0xa1, 0x93, 0x61, 0x7a, 0xba, 0xcc, 0x41, 0x73, 0x49, 0xae, 0x20, 0x41, 0x31,
+        0x12, 0xe6, 0xfa, 0x4e, 0x89, 0xa9, 0x7e, 0xa2, 0x0a, 0x9e, 0xee, 0xe6, 0x4b, 0x55, 0xd3, 0x9a,
+        0x21, 0x92, 0x99, 0x2a, 0x27, 0x4f, 0xc1, 0xa8, 0x36, 0xba, 0x3c, 0x23, 0xa3, 0xfe, 0xeb, 0xbd,
+        0x45, 0x4d, 0x44, 0x23, 0x64, 0x3c, 0xe8, 0x0e, 0x2a, 0x9a, 0xc9, 0x4f, 0xa5, 0x4c, 0xa4, 0x9f};
+    TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(sha256, std::vector<uint8_t>(expectedSha256, expectedSha256 + sizeof(expectedSha256))));
+    TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(sha512, std::vector<uint8_t>(expectedSha512, expectedSha512 + sizeof(expectedSha512))));
+}
+
+void test_hmac_ctx_rebegin_reuses_context() {
+    HmacCtx ctx;
+    std::vector<uint8_t> key = {'k', 'e', 'y'};
+    std::vector<uint8_t> msg = {'a', 'b', 'c'};
+
+    std::vector<uint8_t> out1(32, 0);
+    TEST_ASSERT_TRUE(ctx.begin(ShaVariant::SHA256, CryptoSpan<const uint8_t>(key)).ok());
+    TEST_ASSERT_TRUE(ctx.update(CryptoSpan<const uint8_t>(msg)).ok());
+    TEST_ASSERT_TRUE(ctx.finish(CryptoSpan<uint8_t>(out1)).ok());
+
+    std::vector<uint8_t> out2(32, 0);
+    TEST_ASSERT_TRUE(ctx.begin(ShaVariant::SHA256, CryptoSpan<const uint8_t>(key)).ok());
+    TEST_ASSERT_TRUE(ctx.update(CryptoSpan<const uint8_t>(msg)).ok());
+    TEST_ASSERT_TRUE(ctx.finish(CryptoSpan<uint8_t>(out2)).ok());
+
+    auto oneShot = ESPCrypto::hmac(ShaVariant::SHA256, CryptoSpan<const uint8_t>(key), CryptoSpan<const uint8_t>(msg));
+    TEST_ASSERT_TRUE(oneShot.ok());
+    TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(out1, oneShot.value));
+    TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(out2, oneShot.value));
+}
+
 void test_aes_ctr_stream_roundtrip() {
     std::vector<uint8_t> key(16, 0x00);
     std::vector<uint8_t> nonce(16, 0x01);
@@ -308,6 +355,8 @@ void setup() {
     RUN_TEST(test_sha_hex_matches_known_value);
     RUN_TEST(test_sha_known_vectors);
     RUN_TEST(test_sha_ctx_streaming);
+    RUN_TEST(test_sha_ctx_rebegin_reuses_context);
+    RUN_TEST(test_hmac_ctx_rebegin_reuses_context);
     RUN_TEST(test_password_hash_roundtrip);
     RUN_TEST(test_aes_gcm_known_vector);
     RUN_TEST(test_aes_gcm_auto_iv_roundtrip);
