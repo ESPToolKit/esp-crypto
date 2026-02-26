@@ -83,9 +83,11 @@ void rotate_keys() {
     ESPCrypto::storeKey(memory, current, CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>(pem), strlen(pem)));
     auto loaded = ESPCrypto::loadKey(memory, current, KeyFormat::Pem, KeyKind::Private);
     if (loaded.ok()) {
-        auto sig = ESPCrypto::rsaSign(loaded.value,
-                                      CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>("payload"), 7),
-                                      ShaVariant::SHA256);
+        auto sig = ESPCrypto::rsaSign(
+            loaded.value,
+            CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>("payload"), 7),
+            ShaVariant::SHA256
+        );
         (void)sig;
     }
 
