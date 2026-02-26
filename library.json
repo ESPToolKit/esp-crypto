@@ -1,6 +1,6 @@
 {
   "name": "ESPCrypto",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Hardware-accelerated crypto helpers (SHA, AES, RSA/ECC, JWT, salted hashing) for ESP32",
   "keywords": [
     "esp32",
