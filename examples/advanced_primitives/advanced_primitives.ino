@@ -1,8 +1,8 @@
 #include <Arduino.h>
 #include <ESPCrypto.h>
 
-#include <vector>
 #include <string>
+#include <vector>
 
 const char *RSA_PRIVATE_PEM = R"(-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCwudwslbzHhgGu
@@ -55,93 +55,163 @@ IuWpNdrP2f4GvtZYKkeYrhXDidn1+qYo+jGWUwmCdbo0yKmpDYwmy3/BnQ==
 -----END PUBLIC KEY-----)";
 
 String bytesToHex(const std::vector<uint8_t> &bytes) {
-    static const char *HEX_DIGITS = "0123456789ABCDEF";
-    String out;
-    for (uint8_t b : bytes) {
-        out += HEX_DIGITS[(b >> 4) & 0x0F];
-        out += HEX_DIGITS[b & 0x0F];
-    }
-    return out;
+	static const char *HEX_DIGITS = "0123456789ABCDEF";
+	String out;
+	for (uint8_t b : bytes) {
+		out += HEX_DIGITS[(b >> 4) & 0x0F];
+		out += HEX_DIGITS[b & 0x0F];
+	}
+	return out;
 }
 
 String statusText(const CryptoStatusDetail &status) {
-    if (status.ok()) {
-        return "ok";
-    }
-    if (status.message.length() > 0) {
-        return status.message;
-    }
-    return String(toString(status.code));
+	if (status.ok()) {
+		return "ok";
+	}
+	if (status.message.length() > 0) {
+		return status.message;
+	}
+	return String(toString(status.code));
 }
 
 void logCaps() {
-    CryptoCaps caps = ESPCrypto::caps();
-    Serial.printf("HW accel → SHA:%s AES:%s GCM:%s\n",
-                  caps.shaAccel ? "yes" : "no",
-                  caps.aesAccel ? "yes" : "no",
-                  caps.aesGcmAccel ? "yes" : "no");
+	CryptoCaps caps = ESPCrypto::caps();
+	Serial.printf(
+	    "HW accel → SHA:%s AES:%s GCM:%s\n",
+	    caps.shaAccel ? "yes" : "no",
+	    caps.aesAccel ? "yes" : "no",
+	    caps.aesGcmAccel ? "yes" : "no"
+	);
 }
 
 void setup() {
-    Serial.begin(115200);
-    delay(200);
+	Serial.begin(115200);
+	delay(200);
 
-    // Tighten policy (PBKDF2 iterations >= 2048 by default here)
-    CryptoPolicy pol = ESPCrypto::policy();
-    pol.minPbkdf2Iterations = 2048;
-    ESPCrypto::setPolicy(pol);
+	// Tighten policy (PBKDF2 iterations >= 2048 by default here)
+	CryptoPolicy pol = ESPCrypto::policy();
+	pol.minPbkdf2Iterations = 2048;
+	ESPCrypto::setPolicy(pol);
 
-    logCaps();
+	logCaps();
 
-    // Secure key material that zeroizes on scope exit
-    SecureBuffer key(32);
-    for (size_t i = 0; i < key.size(); ++i) {
-        key.raw()[i] = static_cast<uint8_t>(0xA0 + i);
-    }
+	// Secure key material that zeroizes on scope exit
+	SecureBuffer key(32);
+	for (size_t i = 0; i < key.size(); ++i) {
+		key.raw()[i] = static_cast<uint8_t>(0xA0 + i);
+	}
 
-    // HMAC-SHA256
-    std::vector<uint8_t> msg = {'a', 'p', 'i'};
-    auto hmac = ESPCrypto::hmac(ShaVariant::SHA256, CryptoSpan<const uint8_t>(key.raw()), CryptoSpan<const uint8_t>(msg));
-    Serial.printf("HMAC-SHA256: %s (status=%s)\n", bytesToHex(hmac.value).c_str(), statusText(hmac.status).c_str());
+	// HMAC-SHA256
+	std::vector<uint8_t> msg = {'a', 'p', 'i'};
+	auto hmac = ESPCrypto::hmac(
+	    ShaVariant::SHA256,
+	    CryptoSpan<const uint8_t>(key.raw()),
+	    CryptoSpan<const uint8_t>(msg)
+	);
+	Serial.printf(
+	    "HMAC-SHA256: %s (status=%s)\n",
+	    bytesToHex(hmac.value).c_str(),
+	    statusText(hmac.status).c_str()
+	);
 
-    // HKDF derive two subkeys
-    std::vector<uint8_t> salt = {0x01, 0x02, 0x03, 0x04};
-    std::vector<uint8_t> info = {'h', 'a', 'n', 'd', 's', 'h', 'a', 'k', 'e'};
-    auto hkdf = ESPCrypto::hkdf(ShaVariant::SHA256, CryptoSpan<const uint8_t>(salt), CryptoSpan<const uint8_t>(key.raw()), CryptoSpan<const uint8_t>(info), 32);
-    Serial.printf("HKDF key: %s (status=%s)\n", bytesToHex(hkdf.value).c_str(), statusText(hkdf.status).c_str());
+	// HKDF derive two subkeys
+	std::vector<uint8_t> salt = {0x01, 0x02, 0x03, 0x04};
+	std::vector<uint8_t> info = {'h', 'a', 'n', 'd', 's', 'h', 'a', 'k', 'e'};
+	auto hkdf = ESPCrypto::hkdf(
+	    ShaVariant::SHA256,
+	    CryptoSpan<const uint8_t>(salt),
+	    CryptoSpan<const uint8_t>(key.raw()),
+	    CryptoSpan<const uint8_t>(info),
+	    32
+	);
+	Serial.printf(
+	    "HKDF key: %s (status=%s)\n",
+	    bytesToHex(hkdf.value).c_str(),
+	    statusText(hkdf.status).c_str()
+	);
 
-    // PBKDF2 (policy-enforced iterations)
-    std::vector<uint8_t> passwordSalt = {0x10, 0x20, 0x30, 0x40, 0x50};
-    auto pbkdf2 = ESPCrypto::pbkdf2("wifi-password", CryptoSpan<const uint8_t>(passwordSalt), pol.minPbkdf2Iterations, 32);
-    Serial.printf("PBKDF2: %s (status=%s)\n", bytesToHex(pbkdf2.value).c_str(), statusText(pbkdf2.status).c_str());
+	// PBKDF2 (policy-enforced iterations)
+	std::vector<uint8_t> passwordSalt = {0x10, 0x20, 0x30, 0x40, 0x50};
+	auto pbkdf2 = ESPCrypto::pbkdf2(
+	    "wifi-password",
+	    CryptoSpan<const uint8_t>(passwordSalt),
+	    pol.minPbkdf2Iterations,
+	    32
+	);
+	Serial.printf(
+	    "PBKDF2: %s (status=%s)\n",
+	    bytesToHex(pbkdf2.value).c_str(),
+	    statusText(pbkdf2.status).c_str()
+	);
 
-    // AES-CTR streaming demo
-    std::vector<uint8_t> ctrNonce(16, 0x00);
-    for (size_t i = 0; i < ctrNonce.size(); ++i) {
-        ctrNonce[i] = static_cast<uint8_t>(i);
-    }
-    std::vector<uint8_t> streamInput = {'s', 't', 'r', 'e', 'a', 'm', '-', 'c', 't', 'r'};
-    auto ctrOut = ESPCrypto::aesCtrCrypt(key.raw(), ctrNonce, streamInput);
-    Serial.printf("AES-CTR cipher: %s (status=%s)\n", bytesToHex(ctrOut.value).c_str(), statusText(ctrOut.status).c_str());
-    auto ctrPlain = ESPCrypto::aesCtrCrypt(key.raw(), ctrNonce, ctrOut.value);
-    Serial.printf("AES-CTR plain: %s (status=%s)\n",
-                  String(reinterpret_cast<const char *>(ctrPlain.value.data()), ctrPlain.value.size()).c_str(),
-                  statusText(ctrPlain.status).c_str());
+	// AES-CTR streaming demo
+	std::vector<uint8_t> ctrNonce(16, 0x00);
+	for (size_t i = 0; i < ctrNonce.size(); ++i) {
+		ctrNonce[i] = static_cast<uint8_t>(i);
+	}
+	std::vector<uint8_t> streamInput = {'s', 't', 'r', 'e', 'a', 'm', '-', 'c', 't', 'r'};
+	auto ctrOut = ESPCrypto::aesCtrCrypt(key.raw(), ctrNonce, streamInput);
+	Serial.printf(
+	    "AES-CTR cipher: %s (status=%s)\n",
+	    bytesToHex(ctrOut.value).c_str(),
+	    statusText(ctrOut.status).c_str()
+	);
+	auto ctrPlain = ESPCrypto::aesCtrCrypt(key.raw(), ctrNonce, ctrOut.value);
+	Serial.printf(
+	    "AES-CTR plain: %s (status=%s)\n",
+	    String(reinterpret_cast<const char *>(ctrPlain.value.data()), ctrPlain.value.size())
+	        .c_str(),
+	    statusText(ctrPlain.status).c_str()
+	);
 
-    // RSA sign/verify
-    std::vector<uint8_t> firmware = {'f', 'w', '-', '1', '.', '0'};
-    auto rsaSig = ESPCrypto::rsaSign(std::string(RSA_PRIVATE_PEM), CryptoSpan<const uint8_t>(firmware), ShaVariant::SHA256);
-    Serial.printf("RSA sig bytes: %u (status=%s)\n", static_cast<unsigned>(rsaSig.value.size()), statusText(rsaSig.status).c_str());
-    auto rsaVerify = ESPCrypto::rsaVerify(std::string(RSA_PUBLIC_PEM), CryptoSpan<const uint8_t>(firmware), CryptoSpan<const uint8_t>(rsaSig.value), ShaVariant::SHA256);
-    Serial.printf("RSA verify: %s (status=%s)\n", rsaVerify.ok() ? "ok" : "fail", statusText(rsaVerify.status).c_str());
+	// RSA sign/verify
+	std::vector<uint8_t> firmware = {'f', 'w', '-', '1', '.', '0'};
+	auto rsaSig = ESPCrypto::rsaSign(
+	    std::string(RSA_PRIVATE_PEM),
+	    CryptoSpan<const uint8_t>(firmware),
+	    ShaVariant::SHA256
+	);
+	Serial.printf(
+	    "RSA sig bytes: %u (status=%s)\n",
+	    static_cast<unsigned>(rsaSig.value.size()),
+	    statusText(rsaSig.status).c_str()
+	);
+	auto rsaVerify = ESPCrypto::rsaVerify(
+	    std::string(RSA_PUBLIC_PEM),
+	    CryptoSpan<const uint8_t>(firmware),
+	    CryptoSpan<const uint8_t>(rsaSig.value),
+	    ShaVariant::SHA256
+	);
+	Serial.printf(
+	    "RSA verify: %s (status=%s)\n",
+	    rsaVerify.ok() ? "ok" : "fail",
+	    statusText(rsaVerify.status).c_str()
+	);
 
-    // ECDSA sign/verify
-    auto eccSig = ESPCrypto::eccSign(std::string(ECC_PRIVATE_PEM), CryptoSpan<const uint8_t>(firmware), ShaVariant::SHA256);
-    Serial.printf("ECC sig bytes: %u (status=%s)\n", static_cast<unsigned>(eccSig.value.size()), statusText(eccSig.status).c_str());
-    auto eccVerify = ESPCrypto::eccVerify(std::string(ECC_PUBLIC_PEM), CryptoSpan<const uint8_t>(firmware), CryptoSpan<const uint8_t>(eccSig.value), ShaVariant::SHA256);
-    Serial.printf("ECC verify: %s (status=%s)\n", eccVerify.ok() ? "ok" : "fail", statusText(eccVerify.status).c_str());
+	// ECDSA sign/verify
+	auto eccSig = ESPCrypto::eccSign(
+	    std::string(ECC_PRIVATE_PEM),
+	    CryptoSpan<const uint8_t>(firmware),
+	    ShaVariant::SHA256
+	);
+	Serial.printf(
+	    "ECC sig bytes: %u (status=%s)\n",
+	    static_cast<unsigned>(eccSig.value.size()),
+	    statusText(eccSig.status).c_str()
+	);
+	auto eccVerify = ESPCrypto::eccVerify(
+	    std::string(ECC_PUBLIC_PEM),
+	    CryptoSpan<const uint8_t>(firmware),
+	    CryptoSpan<const uint8_t>(eccSig.value),
+	    ShaVariant::SHA256
+	);
+	Serial.printf(
+	    "ECC verify: %s (status=%s)\n",
+	    eccVerify.ok() ? "ok" : "fail",
+	    statusText(eccVerify.status).c_str()
+	);
 }
 
 void loop() {
-    vTaskDelay(pdMS_TO_TICKS(1000));
+	vTaskDelay(pdMS_TO_TICKS(1000));
 }

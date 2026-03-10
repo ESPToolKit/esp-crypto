@@ -137,6 +137,13 @@ void rotate_keys() {
 ## Tests
 Hardware exercises run via PlatformIO Unity tests under `test/test_esp_crypto`, including KATs for SHA-2, AES-GCM (with tag checks), HKDF, PBKDF2, JWT HS256 round-trips, and password hashing. Host-side CMake just stubs out tests (ESP-IDF primitives are unavailable when cross-compiling for CI).
 
+## Formatting Baseline
+
+This repository follows the firmware formatting baseline from `esptoolkit-template`:
+- `.clang-format` is the source of truth for C/C++/INO layout.
+- `.editorconfig` enforces tabs (`tab_width = 4`), LF endings, and final newline.
+- Format all tracked firmware sources with `bash scripts/format_cpp.sh`.
+
 ## License
 MIT — see [LICENSE.md](LICENSE.md).
 
