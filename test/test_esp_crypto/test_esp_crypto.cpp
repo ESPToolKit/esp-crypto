@@ -52,6 +52,26 @@ void test_password_hash_roundtrip() {
 	TEST_ASSERT_FALSE(ESPCrypto::verifyString("badpass", hashed));
 }
 
+void test_password_verify_rejects_invalid_cost_envelope() {
+	const char *invalidCosts[] = {"bad", "-1", "10x", "32", "999999999999999999999999999999"};
+	for (auto cost : invalidCosts) {
+		String encoded = String("$esphash$v1$") + cost + "$AQ==$AQ==";
+		auto res = ESPCrypto::verifyStringResult("pw", encoded);
+		TEST_ASSERT_FALSE(res.ok());
+		TEST_ASSERT_EQUAL_INT(static_cast<int>(CryptoStatus::DecodeError), static_cast<int>(res.status.code));
+		TEST_ASSERT_FALSE(ESPCrypto::verifyString("pw", encoded));
+	}
+
+	auto trailing =
+	    ESPCrypto::verifyStringResult("pw", "$esphash$v1$10$AQ==$AQ==$unexpected");
+	TEST_ASSERT_FALSE(trailing.ok());
+	TEST_ASSERT_EQUAL_INT(
+	    static_cast<int>(CryptoStatus::DecodeError),
+	    static_cast<int>(trailing.status.code)
+	);
+	TEST_ASSERT_FALSE(ESPCrypto::verifyString("pw", "$esphash$v1$10$AQ==$AQ==$unexpected"));
+}
+
 void test_sha_known_vectors() {
 	ShaOptions opts;
 	opts.variant = ShaVariant::SHA256;
@@ -488,6 +508,7 @@ void setup() {
 	RUN_TEST(test_sha_ctx_rebegin_reuses_context);
 	RUN_TEST(test_hmac_ctx_rebegin_reuses_context);
 	RUN_TEST(test_password_hash_roundtrip);
+	RUN_TEST(test_password_verify_rejects_invalid_cost_envelope);
 	RUN_TEST(test_aes_gcm_known_vector);
 	RUN_TEST(test_aes_gcm_auto_iv_roundtrip);
 	RUN_TEST(test_aes_gcm_span_roundtrip);

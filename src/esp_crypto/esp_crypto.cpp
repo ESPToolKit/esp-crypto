@@ -2294,10 +2294,24 @@ bool parsePasswordHash(
 		parts.push_back(encoded.substr(start, pos - start));
 		start = pos + 1;
 	}
-	if (parts.size() < 6 || parts[1] != "esphash" || parts[2] != "v1") {
+	if (parts.size() != 6 || parts[1] != "esphash" || parts[2] != "v1") {
 		return false;
 	}
-	cost = static_cast<uint8_t>(atoi(parts[3].c_str()));
+	const std::string &costPart = parts[3];
+	if (costPart.empty()) {
+		return false;
+	}
+	uint32_t parsedCost = 0;
+	for (char ch : costPart) {
+		if (ch < '0' || ch > '9') {
+			return false;
+		}
+		parsedCost = parsedCost * 10u + static_cast<uint32_t>(ch - '0');
+		if (parsedCost > 31u) {
+			return false;
+		}
+	}
+	cost = static_cast<uint8_t>(parsedCost);
 	if (!base64Decode(parts[4], Base64Alphabet::Standard, salt)) {
 		return false;
 	}
@@ -3517,6 +3531,10 @@ CryptoResult<void> ESPCrypto::verifyStringResult(const String &input, const Stri
 	}
 	if (salt.empty() || hash.empty()) {
 		result.status = makeStatus(CryptoStatus::DecodeError, "invalid esphash parts");
+		return result;
+	}
+	if (cost > 31) {
+		result.status = makeStatus(CryptoStatus::DecodeError, "invalid esphash envelope");
 		return result;
 	}
 	uint32_t iterations = 1u << cost;
