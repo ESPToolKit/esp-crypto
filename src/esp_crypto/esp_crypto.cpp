@@ -297,7 +297,8 @@ std::string base64Encode(const uint8_t *data, size_t length, Base64Alphabet alph
 		return std::string();
 	}
 	size_t encodedLen = 4 * ((length + 2) / 3);
-	std::string buffer(encodedLen, '\0');
+	// mbedtls_base64_encode requires room for encoded output plus a trailing NUL.
+	std::string buffer(encodedLen + 1, '\0');
 	size_t actualLen = 0;
 	if (mbedtls_base64_encode(
 	        reinterpret_cast<unsigned char *>(&buffer[0]),

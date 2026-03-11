@@ -232,6 +232,27 @@ void test_jwt_roundtrip_hs256() {
 	TEST_ASSERT_EQUAL_STRING("demo", decoded["scope"].as<const char *>());
 }
 
+void test_base64_encode_contract_via_jwt_result_api() {
+	JsonDocument claims;
+	claims["x"] = "y";
+	JwtSignOptions signOptions;
+	signOptions.algorithm = JwtAlgorithm::HS256;
+	signOptions.issuer = "base64-contract";
+	signOptions.expiresInSeconds = 30;
+
+	auto token = ESPCrypto::createJwtResult(claims, std::string("secret"), signOptions);
+	TEST_ASSERT_TRUE_MESSAGE(token.ok(), token.status.message.c_str());
+	TEST_ASSERT_TRUE(token.value.length() > 0);
+
+	JsonDocument decoded;
+	JwtVerifyOptions verifyOptions;
+	verifyOptions.algorithm = JwtAlgorithm::HS256;
+	verifyOptions.issuer = "base64-contract";
+	auto verified = ESPCrypto::verifyJwtResult(token.value, std::string("secret"), decoded, verifyOptions);
+	TEST_ASSERT_TRUE_MESSAGE(verified.ok(), verified.status.message.c_str());
+	TEST_ASSERT_EQUAL_STRING("y", decoded["x"].as<const char *>());
+}
+
 void test_sha_ctx_streaming() {
 	ShaCtx ctx;
 	TEST_ASSERT_TRUE(ctx.begin(ShaVariant::SHA256).ok());
@@ -520,6 +541,7 @@ void setup() {
 	RUN_TEST(test_hkdf_rfc5869_case1);
 	RUN_TEST(test_pbkdf2_vector);
 	RUN_TEST(test_jwt_roundtrip_hs256);
+	RUN_TEST(test_base64_encode_contract_via_jwt_result_api);
 	RUN_TEST(test_jwt_and_envelope_fuzz);
 	RUN_TEST(test_device_key_is_stable);
 	UNITY_END();
