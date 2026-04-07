@@ -1,5 +1,7 @@
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <ESPCrypto.h>
+#include <esp_crypto/jwt.h>
 
 #include <string>
 
