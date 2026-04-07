@@ -518,7 +518,7 @@ CryptoResult<std::vector<uint8_t>> rsaSign(
 		return result;
 	}
 	if (!pkSignContext(
-	        privateKey.pk->ctx,
+	        pkContext(privateKey),
 	        MBEDTLS_PK_RSA,
 	        variant,
 	        data.data(),
@@ -551,7 +551,7 @@ CryptoResult<void> rsaVerify(
 	}
 	std::vector<uint8_t> sigVec(signature.data(), signature.data() + signature.size());
 	if (!pkVerifyContext(
-	        publicKey.pk->ctx,
+	        pkContext(publicKey),
 	        MBEDTLS_PK_RSA,
 	        variant,
 	        data.data(),
@@ -631,7 +631,7 @@ CryptoResult<std::vector<uint8_t>> eccSign(
 		return result;
 	}
 	if (!pkSignContext(
-	        privateKey.pk->ctx,
+	        pkContext(privateKey),
 	        MBEDTLS_PK_ECKEY,
 	        variant,
 	        data.data(),
@@ -664,7 +664,7 @@ CryptoResult<void> eccVerify(
 	}
 	std::vector<uint8_t> sigVec(signature.data(), signature.data() + signature.size());
 	if (!pkVerifyContext(
-	        publicKey.pk->ctx,
+	        pkContext(publicKey),
 	        MBEDTLS_PK_ECKEY,
 	        variant,
 	        data.data(),

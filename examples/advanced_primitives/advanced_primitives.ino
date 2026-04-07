@@ -6,12 +6,12 @@
 
 namespace {
 std::string bytesToHex(const std::vector<uint8_t> &bytes) {
-	static const char *HEX = "0123456789abcdef";
+	static const char *hexDigits = "0123456789abcdef";
 	std::string out;
 	out.reserve(bytes.size() * 2);
 	for (uint8_t b : bytes) {
-		out.push_back(HEX[(b >> 4) & 0x0F]);
-		out.push_back(HEX[b & 0x0F]);
+		out.push_back(hexDigits[(b >> 4) & 0x0F]);
+		out.push_back(hexDigits[b & 0x0F]);
 	}
 	return out;
 }

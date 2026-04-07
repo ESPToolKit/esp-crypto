@@ -220,6 +220,10 @@ struct CryptoKey::PkCache {
 	bool isPrivate = false;
 };
 
+mbedtls_pk_context &pkContext(const CryptoKey &key) {
+	return key.pk->ctx;
+}
+
 CryptoKey::CryptoKey() = default;
 
 CryptoKey::CryptoKey(const CryptoKey &other)

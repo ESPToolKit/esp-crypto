@@ -17,7 +17,7 @@ if(ESP_PLATFORM)
     idf_component_register(
         SRCS ${ESPCRYPTO_SOURCES}
         INCLUDE_DIRS src
-        REQUIRES mbedtls nvs_flash
+        REQUIRES mbedtls nvs_flash esp_timer
     )
     return()
 endif()

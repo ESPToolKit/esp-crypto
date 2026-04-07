@@ -206,6 +206,7 @@ bool pkParsePublicOrPrivate(
     const mbedtls_entropy_context *entropy
 );
 bool pkPolicyAllows(mbedtls_pk_context &pk, mbedtls_pk_type_t expected);
+mbedtls_pk_context &pkContext(const CryptoKey &key);
 bool pkSignContext(
     mbedtls_pk_context &pk,
     mbedtls_pk_type_t expected,
