@@ -1,0 +1,2 @@
+dependencies:
+  bblanchon/arduinojson: "^7.4.2"

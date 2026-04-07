@@ -1,38 +1,49 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ESPCrypto.h>
+#include <esp_crypto/jwt.h>
+
+#include <string>
+
+namespace {
+const char *statusText(const CryptoStatusDetail &status) {
+	return status.message.empty() ? toString(status.code) : status.message.c_str();
+}
+} // namespace
 
 void setup() {
 	Serial.begin(115200);
 	delay(1000);
-	Serial.println("JWKS rotation demo");
 
-	// Build a JWKS with two keys; rotate by switching kid
-	JsonDocument jwks;
-	JsonArray keys = jwks["keys"].to<JsonArray>();
-	JsonObject k1 = keys.add<JsonObject>();
-	k1["kty"] = "oct";
-	k1["kid"] = "k1";
-	k1["alg"] = "HS256";
-	k1["k"] = "c3VwZXJzZWNyZXQ"; // "supersecret"
-
-	JsonObject k2 = keys.add<JsonObject>();
-	k2["kty"] = "oct";
-	k2["kid"] = "k2";
-	k2["alg"] = "HS256";
-	k2["k"] = "bW9yZXNlY3JldA"; // "moresecret"
-
-	// Issue token with kid=k2
 	JsonDocument claims;
-	claims["iss"] = "jwks-demo";
+	claims["scope"] = "rotation";
+
 	JwtSignOptions sign;
 	sign.algorithm = JwtAlgorithm::HS256;
-	sign.keyId = "k2";
-	String token = ESPCrypto::createJwt(claims, "moresecret", sign);
+	sign.keyId = "current";
+	sign.issuer = "jwks";
+
+	auto token = espcrypto::jwt::create(claims, "moresecret", sign);
+	if (!token.ok()) {
+		Serial.printf("create failed: %s\n", statusText(token.status));
+		return;
+	}
+
+	JsonDocument jwks;
+	JsonArray keys = jwks["keys"].to<JsonArray>();
+	JsonObject current = keys.add<JsonObject>();
+	current["kid"] = "current";
+	current["kty"] = "oct";
+	current["alg"] = "HS256";
+	current["k"] = "bW9yZXNlY3JldA";
 
 	JsonDocument decoded;
-	auto res = ESPCrypto::verifyJwtWithJwks(token, jwks, decoded);
-	Serial.printf("JWKS verify with rotation (kid=k2) ok? %s\n", res.ok() ? "yes" : "no");
+	JwtVerifyOptions verify;
+	verify.algorithm = JwtAlgorithm::HS256;
+	verify.issuer = "jwks";
+
+	auto res = espcrypto::jwt::verifyWithJwks(token.value, jwks, decoded, verify);
+	Serial.printf("jwks verify: %s\n", res.ok() ? "ok" : statusText(res.status));
 }
 
 void loop() {

@@ -3,6 +3,25 @@
 # MIT License
 
 cmake_minimum_required(VERSION 3.12)
+
+set(ESPCRYPTO_SOURCES
+    src/esp_crypto/crypto_core.cpp
+    src/esp_crypto/crypto_hash_kdf.cpp
+    src/esp_crypto/crypto_symmetric.cpp
+    src/esp_crypto/crypto_asymmetric.cpp
+    src/esp_crypto/crypto_storage.cpp
+    src/esp_crypto/crypto_jwt.cpp
+)
+
+if(ESP_PLATFORM)
+    idf_component_register(
+        SRCS ${ESPCRYPTO_SOURCES}
+        INCLUDE_DIRS src
+        REQUIRES mbedtls nvs_flash esp_timer
+    )
+    return()
+endif()
+
 project(ESPCrypto)
 
 include(CTest)

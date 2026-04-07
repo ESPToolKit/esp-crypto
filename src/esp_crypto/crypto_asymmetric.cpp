@@ -167,6 +167,7 @@ CryptoStatusDetail buildEcPemFromJwk(
 	return makeStatus(CryptoStatus::Ok);
 }
 
+#if ESPCRYPTO_HAS_ARDUINOJSON
 CryptoResult<CryptoKey> jwkToKey(const JsonObjectConst &jwk) {
 	CryptoResult<CryptoKey> result;
 	const char *kty = jwk["kty"].as<const char *>();
@@ -226,6 +227,7 @@ CryptoResult<CryptoKey> jwkToKey(const JsonObjectConst &jwk) {
 	result.status = makeStatus(CryptoStatus::Unsupported, "kty unsupported");
 	return result;
 }
+#endif
 
 bool pkParsePublicOrPrivate(
     mbedtls_pk_context &pk,
@@ -451,34 +453,11 @@ bool pkVerifyInternal(
 	return ok;
 }
 
-bool ESPCrypto::rsaSign(
-    const std::string &privateKeyPem,
-    const uint8_t *data,
-    size_t length,
-    ShaVariant variant,
-    std::vector<uint8_t> &signature
-) {
-	if (privateKeyPem.empty() || (!data && length > 0)) {
-		return false;
-	}
-	return pkSignInternal(privateKeyPem, MBEDTLS_PK_RSA, variant, data, length, signature);
-}
-
-bool ESPCrypto::rsaVerify(
-    const std::string &publicKeyPem,
-    const uint8_t *data,
-    size_t length,
-    const std::vector<uint8_t> &signature,
+namespace espcrypto::asymmetric {
+CryptoResult<std::vector<uint8_t>> rsaSign(
+    std::string_view privateKeyPem,
+    CryptoSpan<const uint8_t> data,
     ShaVariant variant
-) {
-	if (publicKeyPem.empty() || (!data && length > 0) || signature.empty()) {
-		return false;
-	}
-	return pkVerifyInternal(publicKeyPem, MBEDTLS_PK_RSA, variant, data, length, signature);
-}
-
-CryptoResult<std::vector<uint8_t>> ESPCrypto::rsaSign(
-    const std::string &privateKeyPem, CryptoSpan<const uint8_t> data, ShaVariant variant
 ) {
 	CryptoResult<std::vector<uint8_t>> result;
 	if (privateKeyPem.empty() || (!data.data() && data.size() > 0)) {
@@ -486,7 +465,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::rsaSign(
 		return result;
 	}
 	if (!pkSignInternal(
-	        privateKeyPem,
+	        std::string(privateKeyPem),
 	        MBEDTLS_PK_RSA,
 	        variant,
 	        data.data(),
@@ -501,8 +480,8 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::rsaSign(
 	return result;
 }
 
-CryptoResult<void> ESPCrypto::rsaVerify(
-    const std::string &publicKeyPem,
+CryptoResult<void> rsaVerify(
+    std::string_view publicKeyPem,
     CryptoSpan<const uint8_t> data,
     CryptoSpan<const uint8_t> signature,
     ShaVariant variant
@@ -513,7 +492,7 @@ CryptoResult<void> ESPCrypto::rsaVerify(
 		return result;
 	}
 	if (!pkVerifyInternal(
-	        publicKeyPem,
+	        std::string(publicKeyPem),
 	        MBEDTLS_PK_RSA,
 	        variant,
 	        data.data(),
@@ -527,7 +506,7 @@ CryptoResult<void> ESPCrypto::rsaVerify(
 	return result;
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::rsaSign(
+CryptoResult<std::vector<uint8_t>> rsaSign(
     const CryptoKey &privateKey, CryptoSpan<const uint8_t> data, ShaVariant variant
 ) {
 	CryptoResult<std::vector<uint8_t>> result;
@@ -541,7 +520,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::rsaSign(
 		return result;
 	}
 	if (!pkSignContext(
-	        privateKey.pk->ctx,
+	        pkContext(privateKey),
 	        MBEDTLS_PK_RSA,
 	        variant,
 	        data.data(),
@@ -556,7 +535,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::rsaSign(
 	return result;
 }
 
-CryptoResult<void> ESPCrypto::rsaVerify(
+CryptoResult<void> rsaVerify(
     const CryptoKey &publicKey,
     CryptoSpan<const uint8_t> data,
     CryptoSpan<const uint8_t> signature,
@@ -574,7 +553,7 @@ CryptoResult<void> ESPCrypto::rsaVerify(
 	}
 	std::vector<uint8_t> sigVec(signature.data(), signature.data() + signature.size());
 	if (!pkVerifyContext(
-	        publicKey.pk->ctx,
+	        pkContext(publicKey),
 	        MBEDTLS_PK_RSA,
 	        variant,
 	        data.data(),
@@ -588,34 +567,10 @@ CryptoResult<void> ESPCrypto::rsaVerify(
 	return result;
 }
 
-bool ESPCrypto::eccSign(
-    const std::string &privateKeyPem,
-    const uint8_t *data,
-    size_t length,
-    ShaVariant variant,
-    std::vector<uint8_t> &signature
-) {
-	if (privateKeyPem.empty() || (!data && length > 0)) {
-		return false;
-	}
-	return pkSignInternal(privateKeyPem, MBEDTLS_PK_ECKEY, variant, data, length, signature);
-}
-
-bool ESPCrypto::eccVerify(
-    const std::string &publicKeyPem,
-    const uint8_t *data,
-    size_t length,
-    const std::vector<uint8_t> &signature,
+CryptoResult<std::vector<uint8_t>> eccSign(
+    std::string_view privateKeyPem,
+    CryptoSpan<const uint8_t> data,
     ShaVariant variant
-) {
-	if (publicKeyPem.empty() || (!data && length > 0) || signature.empty()) {
-		return false;
-	}
-	return pkVerifyInternal(publicKeyPem, MBEDTLS_PK_ECKEY, variant, data, length, signature);
-}
-
-CryptoResult<std::vector<uint8_t>> ESPCrypto::eccSign(
-    const std::string &privateKeyPem, CryptoSpan<const uint8_t> data, ShaVariant variant
 ) {
 	CryptoResult<std::vector<uint8_t>> result;
 	if (privateKeyPem.empty() || (!data.data() && data.size() > 0)) {
@@ -623,7 +578,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::eccSign(
 		return result;
 	}
 	if (!pkSignInternal(
-	        privateKeyPem,
+	        std::string(privateKeyPem),
 	        MBEDTLS_PK_ECKEY,
 	        variant,
 	        data.data(),
@@ -638,8 +593,8 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::eccSign(
 	return result;
 }
 
-CryptoResult<void> ESPCrypto::eccVerify(
-    const std::string &publicKeyPem,
+CryptoResult<void> eccVerify(
+    std::string_view publicKeyPem,
     CryptoSpan<const uint8_t> data,
     CryptoSpan<const uint8_t> signature,
     ShaVariant variant
@@ -650,7 +605,7 @@ CryptoResult<void> ESPCrypto::eccVerify(
 		return result;
 	}
 	if (!pkVerifyInternal(
-	        publicKeyPem,
+	        std::string(publicKeyPem),
 	        MBEDTLS_PK_ECKEY,
 	        variant,
 	        data.data(),
@@ -664,7 +619,7 @@ CryptoResult<void> ESPCrypto::eccVerify(
 	return result;
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::eccSign(
+CryptoResult<std::vector<uint8_t>> eccSign(
     const CryptoKey &privateKey, CryptoSpan<const uint8_t> data, ShaVariant variant
 ) {
 	CryptoResult<std::vector<uint8_t>> result;
@@ -678,7 +633,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::eccSign(
 		return result;
 	}
 	if (!pkSignContext(
-	        privateKey.pk->ctx,
+	        pkContext(privateKey),
 	        MBEDTLS_PK_ECKEY,
 	        variant,
 	        data.data(),
@@ -693,7 +648,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::eccSign(
 	return result;
 }
 
-CryptoResult<void> ESPCrypto::eccVerify(
+CryptoResult<void> eccVerify(
     const CryptoKey &publicKey,
     CryptoSpan<const uint8_t> data,
     CryptoSpan<const uint8_t> signature,
@@ -711,7 +666,7 @@ CryptoResult<void> ESPCrypto::eccVerify(
 	}
 	std::vector<uint8_t> sigVec(signature.data(), signature.data() + signature.size());
 	if (!pkVerifyContext(
-	        publicKey.pk->ctx,
+	        pkContext(publicKey),
 	        MBEDTLS_PK_ECKEY,
 	        variant,
 	        data.data(),
@@ -725,16 +680,16 @@ CryptoResult<void> ESPCrypto::eccVerify(
 	return result;
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::ecdsaDerToRaw(CryptoSpan<const uint8_t> der) {
+CryptoResult<std::vector<uint8_t>> ecdsaDerToRaw(CryptoSpan<const uint8_t> der) {
 	return ecdsaDerToRawInternal(der);
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::ecdsaRawToDer(CryptoSpan<const uint8_t> raw) {
+CryptoResult<std::vector<uint8_t>> ecdsaRawToDer(CryptoSpan<const uint8_t> raw) {
 	return ecdsaRawToDerInternal(raw);
 }
 
 CryptoResult<std::vector<uint8_t>>
-ESPCrypto::x25519(CryptoSpan<const uint8_t> privateKey, CryptoSpan<const uint8_t> peerPublic) {
+x25519(CryptoSpan<const uint8_t> privateKey, CryptoSpan<const uint8_t> peerPublic) {
 	CryptoResult<std::vector<uint8_t>> result;
 #if defined(MBEDTLS_ECP_DP_CURVE25519_ENABLED)
 	if (privateKey.size() != 32 || peerPublic.size() != 32) {
@@ -792,25 +747,4 @@ cleanup:
 #endif
 	return result;
 }
-
-CryptoResult<std::vector<uint8_t>>
-ESPCrypto::ed25519Sign(CryptoSpan<const uint8_t> privateKey, CryptoSpan<const uint8_t> message) {
-	CryptoResult<std::vector<uint8_t>> result;
-	(void)privateKey;
-	(void)message;
-	result.status = makeStatus(CryptoStatus::Unsupported, "ed25519 unavailable");
-	return result;
-}
-
-CryptoResult<void> ESPCrypto::ed25519Verify(
-    CryptoSpan<const uint8_t> publicKey,
-    CryptoSpan<const uint8_t> message,
-    CryptoSpan<const uint8_t> signature
-) {
-	CryptoResult<void> result;
-	(void)publicKey;
-	(void)message;
-	(void)signature;
-	result.status = makeStatus(CryptoStatus::Unsupported, "ed25519 unavailable");
-	return result;
-}
+} // namespace espcrypto::asymmetric

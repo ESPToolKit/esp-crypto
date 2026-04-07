@@ -1,15 +1,23 @@
 #include "internal/crypto_internal.h"
 
+struct AesCtrStream::Impl {
+	mbedtls_aes_context ctx;
+	unsigned char counter[16] = {0};
+	unsigned char streamBlock[16] = {0};
+	size_t offset = 0;
+	bool started = false;
+};
+
 AesCtrStream::AesCtrStream() {
-	mbedtls_aes_init(&ctx);
-	memset(counter, 0, sizeof(counter));
-	memset(streamBlock, 0, sizeof(streamBlock));
+	impl = new Impl();
+	mbedtls_aes_init(&impl->ctx);
 }
 
 AesCtrStream::~AesCtrStream() {
-	mbedtls_aes_free(&ctx);
-	mbedtls_platform_zeroize(counter, sizeof(counter));
-	mbedtls_platform_zeroize(streamBlock, sizeof(streamBlock));
+	mbedtls_aes_free(&impl->ctx);
+	mbedtls_platform_zeroize(impl->counter, sizeof(impl->counter));
+	mbedtls_platform_zeroize(impl->streamBlock, sizeof(impl->streamBlock));
+	delete impl;
 }
 
 CryptoStatusDetail
@@ -17,18 +25,18 @@ AesCtrStream::begin(const std::vector<uint8_t> &key, CryptoSpan<const uint8_t> n
 	if (!aesKeyValid(key) || nonceCounter.size() != 16) {
 		return makeStatus(CryptoStatus::InvalidInput, "invalid key or nonce");
 	}
-	if (mbedtls_aes_setkey_enc(&ctx, key.data(), key.size() * 8) != 0) {
+	if (mbedtls_aes_setkey_enc(&impl->ctx, key.data(), key.size() * 8) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "aes setkey failed");
 	}
-	memcpy(counter, nonceCounter.data(), 16);
-	offset = 0;
-	started = true;
+	memcpy(impl->counter, nonceCounter.data(), 16);
+	impl->offset = 0;
+	impl->started = true;
 	return makeStatus(CryptoStatus::Ok);
 }
 
 CryptoStatusDetail
 AesCtrStream::update(CryptoSpan<const uint8_t> input, CryptoSpan<uint8_t> output) {
-	if (!started) {
+	if (!impl->started) {
 		return makeStatus(CryptoStatus::InvalidInput, "ctr not started");
 	}
 	if (output.size() < input.size()) {
@@ -37,17 +45,17 @@ AesCtrStream::update(CryptoSpan<const uint8_t> input, CryptoSpan<uint8_t> output
 	if (input.empty()) {
 		return makeStatus(CryptoStatus::Ok);
 	}
-	size_t offCopy = offset;
+	size_t offCopy = impl->offset;
 	int ret = mbedtls_aes_crypt_ctr(
-	    &ctx,
+	    &impl->ctx,
 	    input.size(),
 	    &offCopy,
-	    counter,
-	    streamBlock,
+	    impl->counter,
+	    impl->streamBlock,
 	    input.data(),
 	    output.data()
 	);
-	offset = offCopy;
+	impl->offset = offCopy;
 	return ret == 0 ? makeStatus(CryptoStatus::Ok)
 	                : makeStatus(CryptoStatus::InternalError, "ctr update failed");
 }
@@ -100,13 +108,22 @@ static int gcmFinishCompat(mbedtls_gcm_context &ctx, CryptoSpan<uint8_t> tagOut)
 #endif
 }
 
+struct AesGcmCtx::Impl {
+	bool decrypt = false;
+	bool started = false;
+	mbedtls_gcm_context ctx;
+	std::vector<uint8_t> tagVerify;
+};
+
 AesGcmCtx::AesGcmCtx() {
-	mbedtls_gcm_init(&ctx);
+	impl = new Impl();
+	mbedtls_gcm_init(&impl->ctx);
 }
 
 AesGcmCtx::~AesGcmCtx() {
-	mbedtls_gcm_free(&ctx);
-	mbedtls_platform_zeroize(tagVerify.data(), tagVerify.size());
+	mbedtls_gcm_free(&impl->ctx);
+	mbedtls_platform_zeroize(impl->tagVerify.data(), impl->tagVerify.size());
+	delete impl;
 }
 
 CryptoStatusDetail AesGcmCtx::beginCommon(
@@ -124,20 +141,20 @@ CryptoStatusDetail AesGcmCtx::beginCommon(
 	if (!policy.allowLegacy && iv.size() < policy.minAesGcmIvBytes) {
 		return makeStatus(CryptoStatus::PolicyViolation, "iv too short");
 	}
-	decrypt = decryptMode;
-	if (decrypt) {
-		tagVerify.assign(tag.data(), tag.data() + tag.size());
+	impl->decrypt = decryptMode;
+	if (impl->decrypt) {
+		impl->tagVerify.assign(tag.data(), tag.data() + tag.size());
 	} else {
-		tagVerify.clear();
+		impl->tagVerify.clear();
 	}
-	if (mbedtls_gcm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, key.data(), key.size() * 8) != 0) {
+	if (mbedtls_gcm_setkey(&impl->ctx, MBEDTLS_CIPHER_ID_AES, key.data(), key.size() * 8) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "gcm setkey failed");
 	}
-	int mode = decrypt ? MBEDTLS_GCM_DECRYPT : MBEDTLS_GCM_ENCRYPT;
-	if (gcmStartsCompat(ctx, mode, iv, aad) != 0) {
+	int mode = impl->decrypt ? MBEDTLS_GCM_DECRYPT : MBEDTLS_GCM_ENCRYPT;
+	if (gcmStartsCompat(impl->ctx, mode, iv, aad) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "gcm start failed");
 	}
-	started = true;
+	impl->started = true;
 	return makeStatus(CryptoStatus::Ok);
 }
 
@@ -160,7 +177,7 @@ CryptoStatusDetail AesGcmCtx::beginDecrypt(
 }
 
 CryptoStatusDetail AesGcmCtx::update(CryptoSpan<const uint8_t> input, CryptoSpan<uint8_t> output) {
-	if (!started) {
+	if (!impl->started) {
 		return makeStatus(CryptoStatus::InvalidInput, "gcm not started");
 	}
 	if (output.size() < input.size()) {
@@ -169,32 +186,33 @@ CryptoStatusDetail AesGcmCtx::update(CryptoSpan<const uint8_t> input, CryptoSpan
 	if (input.empty()) {
 		return makeStatus(CryptoStatus::Ok);
 	}
-	if (gcmUpdateCompat(ctx, input, output) != 0) {
+	if (gcmUpdateCompat(impl->ctx, input, output) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "gcm update failed");
 	}
 	return makeStatus(CryptoStatus::Ok);
 }
 
 CryptoStatusDetail AesGcmCtx::finish(CryptoSpan<uint8_t> tagOut) {
-	if (!started) {
+	if (!impl->started) {
 		return makeStatus(CryptoStatus::InvalidInput, "gcm not started");
 	}
-	started = false;
-	if (!decrypt) {
+	impl->started = false;
+	if (!impl->decrypt) {
 		if (tagOut.size() < AES_GCM_TAG_BYTES) {
 			return makeStatus(CryptoStatus::BufferTooSmall, "tag too small");
 		}
-		if (gcmFinishCompat(ctx, CryptoSpan<uint8_t>(tagOut.data(), AES_GCM_TAG_BYTES)) != 0) {
+		if (gcmFinishCompat(impl->ctx, CryptoSpan<uint8_t>(tagOut.data(), AES_GCM_TAG_BYTES)) !=
+		    0) {
 			return makeStatus(CryptoStatus::InternalError, "gcm finish failed");
 		}
 		return makeStatus(CryptoStatus::Ok);
 	}
 	std::vector<uint8_t> computed(AES_GCM_TAG_BYTES, 0);
-	if (gcmFinishCompat(ctx, CryptoSpan<uint8_t>(computed)) != 0) {
+	if (gcmFinishCompat(impl->ctx, CryptoSpan<uint8_t>(computed)) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "gcm finish failed");
 	}
 	bool ok = constantTimeEquals(
-	    CryptoSpan<const uint8_t>(tagVerify),
+	    CryptoSpan<const uint8_t>(impl->tagVerify),
 	    CryptoSpan<const uint8_t>(computed)
 	);
 	mbedtls_platform_zeroize(computed.data(), computed.size());
@@ -563,54 +581,8 @@ CryptoStatusDetail aesGcmDecryptInternal(
 	);
 }
 
-bool ESPCrypto::aesGcmEncrypt(
-    const std::vector<uint8_t> &key,
-    const std::vector<uint8_t> &iv,
-    const std::vector<uint8_t> &plaintext,
-    std::vector<uint8_t> &ciphertext,
-    std::vector<uint8_t> &tag,
-    const std::vector<uint8_t> &aad
-) {
-	CryptoStatusDetail status = aesGcmEncryptInternal(key, iv, aad, plaintext, ciphertext, tag);
-	if (!status.ok()) {
-		secureZero(ciphertext.data(), ciphertext.size());
-		secureZero(tag.data(), tag.size());
-	}
-	return status.ok();
-}
-
-bool ESPCrypto::aesGcmDecrypt(
-    const std::vector<uint8_t> &key,
-    const std::vector<uint8_t> &iv,
-    const std::vector<uint8_t> &ciphertext,
-    const std::vector<uint8_t> &tag,
-    std::vector<uint8_t> &plaintext,
-    const std::vector<uint8_t> &aad
-) {
-	CryptoStatusDetail status = aesGcmDecryptInternal(key, iv, aad, ciphertext, tag, plaintext);
-	if (!status.ok()) {
-		secureZero(plaintext.data(), plaintext.size());
-		plaintext.clear();
-	}
-	return status.ok();
-}
-
-bool ESPCrypto::aesCtrCrypt(
-    const std::vector<uint8_t> &key,
-    const std::vector<uint8_t> &nonceCounter,
-    const std::vector<uint8_t> &input,
-    std::vector<uint8_t> &output
-) {
-	auto result = aesCtrCrypt(key, nonceCounter, input);
-	if (!result.ok()) {
-		output.clear();
-		return false;
-	}
-	output = std::move(result.value);
-	return true;
-}
-
-CryptoResult<GcmMessage> ESPCrypto::aesGcmEncryptAuto(
+namespace espcrypto::symmetric {
+CryptoResult<GcmMessage> aesGcmEncryptAuto(
     const std::vector<uint8_t> &key,
     const std::vector<uint8_t> &plaintext,
     const std::vector<uint8_t> &aad,
@@ -708,7 +680,7 @@ CryptoResult<GcmMessage> ESPCrypto::aesGcmEncryptAuto(
 	return result;
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::aesGcmDecrypt(
+CryptoResult<std::vector<uint8_t>> aesGcmDecrypt(
     const std::vector<uint8_t> &key,
     const std::vector<uint8_t> &iv,
     const std::vector<uint8_t> &ciphertext,
@@ -723,7 +695,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::aesGcmDecrypt(
 	return result;
 }
 
-CryptoResult<void> ESPCrypto::aesGcmEncrypt(
+CryptoResult<void> aesGcmEncrypt(
     const std::vector<uint8_t> &key,
     CryptoSpan<const uint8_t> iv,
     CryptoSpan<const uint8_t> plaintext,
@@ -747,7 +719,7 @@ CryptoResult<void> ESPCrypto::aesGcmEncrypt(
 	return result;
 }
 
-CryptoResult<void> ESPCrypto::aesGcmDecrypt(
+CryptoResult<void> aesGcmDecrypt(
     const std::vector<uint8_t> &key,
     CryptoSpan<const uint8_t> iv,
     CryptoSpan<const uint8_t> ciphertext,
@@ -765,7 +737,7 @@ CryptoResult<void> ESPCrypto::aesGcmDecrypt(
 	return result;
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::aesCtrCrypt(
+CryptoResult<std::vector<uint8_t>> aesCtrCrypt(
     const std::vector<uint8_t> &key,
     const std::vector<uint8_t> &nonceCounter,
     const std::vector<uint8_t> &input
@@ -794,7 +766,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::aesCtrCrypt(
 	return result;
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::chacha20Poly1305Encrypt(
+CryptoResult<std::vector<uint8_t>> chacha20Poly1305Encrypt(
     CryptoSpan<const uint8_t> key,
     CryptoSpan<const uint8_t> nonce,
     CryptoSpan<const uint8_t> aad,
@@ -841,7 +813,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::chacha20Poly1305Encrypt(
 	return result;
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::chacha20Poly1305Decrypt(
+CryptoResult<std::vector<uint8_t>> chacha20Poly1305Decrypt(
     CryptoSpan<const uint8_t> key,
     CryptoSpan<const uint8_t> nonce,
     CryptoSpan<const uint8_t> aad,
@@ -891,7 +863,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::chacha20Poly1305Decrypt(
 	return result;
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::xchacha20Poly1305Encrypt(
+CryptoResult<std::vector<uint8_t>> xchacha20Poly1305Encrypt(
     CryptoSpan<const uint8_t> key,
     CryptoSpan<const uint8_t> nonce,
     CryptoSpan<const uint8_t> aad,
@@ -906,7 +878,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::xchacha20Poly1305Encrypt(
 	return result;
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::xchacha20Poly1305Decrypt(
+CryptoResult<std::vector<uint8_t>> xchacha20Poly1305Decrypt(
     CryptoSpan<const uint8_t> key,
     CryptoSpan<const uint8_t> nonce,
     CryptoSpan<const uint8_t> aad,
@@ -920,3 +892,4 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::xchacha20Poly1305Decrypt(
 	result.status = makeStatus(CryptoStatus::Unsupported, "xchacha20poly1305 unavailable");
 	return result;
 }
+} // namespace espcrypto::symmetric
