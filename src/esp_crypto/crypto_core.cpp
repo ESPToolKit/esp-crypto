@@ -193,7 +193,7 @@ bool base64Decode(const std::string &input, Base64Alphabet alphabet, std::vector
 }
 
 void fillRandom(uint8_t *data, size_t length) {
-#if ESPCRYPTO_HAS_ESP_SYSTEM
+#if ESPCRYPTO_HAS_ESP_RANDOM
 	esp_fill_random(data, length);
 #else
 	std::random_device rd;

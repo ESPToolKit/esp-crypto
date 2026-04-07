@@ -66,13 +66,22 @@
 #define ESPCRYPTO_HAS_ESP_TIMER 0
 #endif
 
-#if ESPCRYPTO_HAS_ESP_SYSTEM || ESPCRYPTO_HAS_ESP_TIMER
+#if (defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)) && __has_include("esp_random.h")
+#define ESPCRYPTO_HAS_ESP_RANDOM 1
+#else
+#define ESPCRYPTO_HAS_ESP_RANDOM 0
+#endif
+
+#if ESPCRYPTO_HAS_ESP_SYSTEM || ESPCRYPTO_HAS_ESP_TIMER || ESPCRYPTO_HAS_ESP_RANDOM
 extern "C" {
 #if ESPCRYPTO_HAS_ESP_SYSTEM
 #include "esp_system.h"
 #endif
 #if ESPCRYPTO_HAS_ESP_TIMER
 #include "esp_timer.h"
+#endif
+#if ESPCRYPTO_HAS_ESP_RANDOM
+#include "esp_random.h"
 #endif
 }
 #endif
