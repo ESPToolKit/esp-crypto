@@ -524,6 +524,45 @@ CryptoStatusDetail aesGcmDecryptSpan(
 	return makeStatus(CryptoStatus::Ok);
 }
 
+CryptoStatusDetail aesGcmEncryptInternal(
+    const std::vector<uint8_t> &key,
+    const std::vector<uint8_t> &iv,
+    const std::vector<uint8_t> &aad,
+    const std::vector<uint8_t> &plaintext,
+    std::vector<uint8_t> &ciphertext,
+    std::vector<uint8_t> &tag
+) {
+	ciphertext.assign(plaintext.size(), 0);
+	tag.assign(AES_GCM_TAG_BYTES, 0);
+	return aesGcmEncryptSpan(
+	    key,
+	    CryptoSpan<const uint8_t>(iv),
+	    CryptoSpan<const uint8_t>(aad),
+	    CryptoSpan<const uint8_t>(plaintext),
+	    CryptoSpan<uint8_t>(ciphertext),
+	    CryptoSpan<uint8_t>(tag)
+	);
+}
+
+CryptoStatusDetail aesGcmDecryptInternal(
+    const std::vector<uint8_t> &key,
+    const std::vector<uint8_t> &iv,
+    const std::vector<uint8_t> &aad,
+    const std::vector<uint8_t> &ciphertext,
+    const std::vector<uint8_t> &tag,
+    std::vector<uint8_t> &plaintext
+) {
+	plaintext.assign(ciphertext.size(), 0);
+	return aesGcmDecryptSpan(
+	    key,
+	    CryptoSpan<const uint8_t>(iv),
+	    CryptoSpan<const uint8_t>(aad),
+	    CryptoSpan<const uint8_t>(ciphertext),
+	    CryptoSpan<const uint8_t>(tag),
+	    CryptoSpan<uint8_t>(plaintext)
+	);
+}
+
 bool ESPCrypto::aesGcmEncrypt(
     const std::vector<uint8_t> &key,
     const std::vector<uint8_t> &iv,
