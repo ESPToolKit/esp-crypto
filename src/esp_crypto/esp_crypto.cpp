@@ -1326,13 +1326,14 @@ CryptoStatusDetail LittleFsKeyStore::remove(const KeyHandle &handle) {
 
 std::vector<uint8_t> deviceFingerprint() {
 #if defined(ESP_PLATFORM)
-	uint8_t mac[6] = {0};
 #if ESPCRYPTO_HAS_ESP_MAC && defined(ESP_MAC_WIFI_STA)
+	uint8_t mac[6];
 	if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
 		return std::vector<uint8_t>(mac, mac + sizeof(mac));
 	}
 #endif
 #if ESPCRYPTO_HAS_ESP_EFUSE_MAC
+	uint8_t mac[6];
 	if (esp_efuse_mac_get_default(mac) == ESP_OK) {
 		return std::vector<uint8_t>(mac, mac + sizeof(mac));
 	}
@@ -1678,7 +1679,7 @@ bool pkParsePublicOrPrivate(
     mbedtls_pk_context &pk,
     const std::string &pem,
     mbedtls_ctr_drbg_context *ctr,
-    mbedtls_entropy_context *entropy
+    const mbedtls_entropy_context *entropy
 ) {
 	int ret = mbedtls_pk_parse_public_key(
 	    &pk,
@@ -1690,6 +1691,7 @@ bool pkParsePublicOrPrivate(
 	}
 	mbedtls_ctr_drbg_context localCtr;
 	mbedtls_entropy_context localEntropy;
+	// cppcheck-suppress constVariablePointer
 	mbedtls_ctr_drbg_context *effectiveCtr = ctr;
 	if (!ctr || !entropy) {
 		if (!initDrbg(localCtr, localEntropy)) {
@@ -2181,13 +2183,14 @@ CryptoStatusDetail aesGcmEncryptSpan(
 #endif
 	CryptoSpan<uint8_t> ctSlice(ciphertext.data(), plaintext.size());
 	CryptoSpan<uint8_t> tagSlice(tag.data(), AES_GCM_TAG_BYTES);
-	bool ok = false;
 #if ESPCRYPTO_AES_GCM_ACCEL
-	ok = hardwareGcmCryptSpan(MBEDTLS_GCM_ENCRYPT, key, iv, aad, plaintext, ctSlice, tagSlice);
-#endif
+	bool ok = hardwareGcmCryptSpan(MBEDTLS_GCM_ENCRYPT, key, iv, aad, plaintext, ctSlice, tagSlice);
 	if (!ok) {
 		ok = softwareGcmCrypt(MBEDTLS_GCM_ENCRYPT, key, iv, aad, plaintext, ctSlice, tagSlice);
 	}
+#else
+	bool ok = softwareGcmCrypt(MBEDTLS_GCM_ENCRYPT, key, iv, aad, plaintext, ctSlice, tagSlice);
+#endif
 	if (!ok) {
 		secureZero(ctSlice.data(), ctSlice.size());
 		secureZero(tagSlice.data(), tagSlice.size());
@@ -2217,9 +2220,8 @@ CryptoStatusDetail aesGcmDecryptSpan(
 	}
 	CryptoSpan<uint8_t> ptSlice(plaintext.data(), ciphertext.size());
 	std::vector<uint8_t> tagCopy(tag.data(), tag.data() + tag.size());
-	bool ok = false;
 #if ESPCRYPTO_AES_GCM_ACCEL
-	ok = hardwareGcmCryptSpan(
+	bool ok = hardwareGcmCryptSpan(
 	    MBEDTLS_GCM_DECRYPT,
 	    key,
 	    iv,
@@ -2228,7 +2230,6 @@ CryptoStatusDetail aesGcmDecryptSpan(
 	    ptSlice,
 	    CryptoSpan<uint8_t>(tagCopy)
 	);
-#endif
 	if (!ok) {
 		tagCopy.assign(tag.data(), tag.data() + tag.size());
 		ok = softwareGcmCrypt(
@@ -2241,6 +2242,17 @@ CryptoStatusDetail aesGcmDecryptSpan(
 		    CryptoSpan<uint8_t>(tagCopy)
 		);
 	}
+#else
+	bool ok = softwareGcmCrypt(
+	    MBEDTLS_GCM_DECRYPT,
+	    key,
+	    iv,
+	    aad,
+	    ciphertext,
+	    ptSlice,
+	    CryptoSpan<uint8_t>(tagCopy)
+	);
+#endif
 	secureZero(tagCopy.data(), tagCopy.size());
 	if (!ok) {
 		secureZero(ptSlice.data(), ptSlice.size());
@@ -2476,15 +2488,17 @@ ESPCrypto::shaResult(CryptoSpan<const uint8_t> data, const ShaOptions &options) 
 	static const uint8_t ZERO_BYTE = 0;
 	const uint8_t *buffer = data.size() == 0 ? &ZERO_BYTE : data.data();
 	size_t length = data.size();
-	bool hashed = false;
 #if ESPCRYPTO_SHA_ACCEL
+	bool hashed = false;
 	if (options.preferHardware) {
 		hashed = tryHardwareSha(options.variant, buffer, length, result.value.data());
 	}
-#endif
 	if (!hashed) {
 		hashed = softwareSha(options.variant, buffer, length, result.value.data());
 	}
+#else
+	bool hashed = softwareSha(options.variant, buffer, length, result.value.data());
+#endif
 	if (!hashed) {
 		secureZero(result.value.data(), result.value.size());
 		result.value.clear();
@@ -2843,13 +2857,14 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::aesCtrCrypt(
 		return result;
 	}
 	result.value.assign(input.size(), 0);
-	bool ok = false;
 #if ESPCRYPTO_AES_ACCEL
-	ok = hardwareAesCtr(key, nonceCounter, input, result.value);
-#endif
+	bool ok = hardwareAesCtr(key, nonceCounter, input, result.value);
 	if (!ok) {
 		ok = softwareAesCtr(key, nonceCounter, input, result.value);
 	}
+#else
+	bool ok = softwareAesCtr(key, nonceCounter, input, result.value);
+#endif
 	if (!ok) {
 		secureZero(result.value.data(), result.value.size());
 		result.value.clear();
