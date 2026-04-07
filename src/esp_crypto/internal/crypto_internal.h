@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -153,6 +154,7 @@ bool tryHardwareSha(ShaVariant variant, const uint8_t *data, size_t length, uint
 std::string base64Encode(const uint8_t *data, size_t length, Base64Alphabet alphabet);
 bool base64Decode(const std::string &input, Base64Alphabet alphabet, std::vector<uint8_t> &output);
 uint32_t currentTimeSeconds(uint32_t overrideValue);
+uint64_t monotonicMillis();
 void fillRandom(uint8_t *data, size_t length);
 bool constantTimeEquals(CryptoSpan<const uint8_t> a, CryptoSpan<const uint8_t> b);
 CryptoStatusDetail buildRsaPemFromJwk(
@@ -165,14 +167,21 @@ CryptoStatusDetail buildEcPemFromJwk(
     std::string &outPem
 );
 CryptoResult<CryptoKey> jwkToKey(const JsonObjectConst &jwk);
-CryptoResult<CryptoKey> selectJwkFromSet(const JsonDocument &jwks, const String &kid, JwtAlgorithm algHint);
+CryptoResult<CryptoKey>
+selectJwkFromSet(const JsonDocument &jwks, const std::string &kid, JwtAlgorithm algHint);
 std::string handleKeyString(const KeyHandle &handle);
-bool ensureNvsReady(const String &partition);
+bool ensureNvsReady(const std::string &partition);
 uint64_t loadCounterFromNvs(
-    const String &ns, const String &partition, const std::string &key, bool &found
+    const std::string &ns,
+    const std::string &partition,
+    const std::string &key,
+    bool &found
 );
 void storeCounterToNvs(
-    const String &ns, const String &partition, const std::string &key, uint64_t value
+    const std::string &ns,
+    const std::string &partition,
+    const std::string &key,
+    uint64_t value
 );
 bool hmacSha256(
     const std::string &key, const uint8_t *data, size_t length, std::vector<uint8_t> &out

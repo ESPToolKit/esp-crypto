@@ -1,54 +1,55 @@
 #include <Arduino.h>
 #include <ESPCrypto.h>
 
-String toFriendly(const CryptoStatusDetail &status) {
-	if (status.ok()) {
-		return "ok";
-	}
-	if (status.message.length() > 0) {
-		return status.message;
-	}
-	return String(toString(status.code));
+#include <string>
+
+namespace {
+const char *statusText(const CryptoStatusDetail &status) {
+	return status.message.empty() ? toString(status.code) : status.message.c_str();
 }
+} // namespace
 
 void setup() {
 	Serial.begin(115200);
-	delay(200);
+	delay(1000);
 
-	// JWT creation/verification (HS256)
 	JsonDocument claims;
-	claims["role"] = "admin";
+	claims["device"] = "esp32";
+	claims["scope"] = "demo";
+
 	JwtSignOptions sign;
 	sign.algorithm = JwtAlgorithm::HS256;
-	sign.issuer = "esp32";
+	sign.issuer = "example";
 	sign.expiresInSeconds = 60;
 
-	auto tokenResult = ESPCrypto::createJwtResult(claims, "super-secret", sign);
-	if (!tokenResult.ok()) {
-		Serial.printf("JWT create failed: %s\n", toFriendly(tokenResult.status).c_str());
+	auto token = espcrypto::jwt::create(claims, "super-secret", sign);
+	if (!token.ok()) {
+		Serial.printf("token create failed: %s\n", statusText(token.status));
 		return;
 	}
-	Serial.printf("JWT: %s\n", tokenResult.value.c_str());
+	Serial.printf("token: %s\n", token.value.c_str());
 
 	JsonDocument decoded;
 	JwtVerifyOptions verify;
 	verify.algorithm = JwtAlgorithm::HS256;
-	verify.issuer = "esp32";
-	auto verifyResult =
-	    ESPCrypto::verifyJwtResult(tokenResult.value, "super-secret", decoded, verify);
-	if (!verifyResult.ok()) {
-		Serial.printf("JWT verify failed: %s\n", toFriendly(verifyResult.status).c_str());
-	} else {
-		Serial.printf("JWT role claim: %s\n", decoded["role"].as<const char *>());
-	}
+	verify.issuer = "example";
 
-	// Password hashing + verification
-	String hashed = ESPCrypto::hashString("hunter2");
-	Serial.printf("Hashed password: %s\n", hashed.c_str());
-	bool ok = ESPCrypto::verifyString("hunter2", hashed);
-	Serial.printf("Password matches: %s\n", ok ? "true" : "false");
+	auto verified = espcrypto::jwt::verify(token.value, "super-secret", decoded, verify);
+	Serial.printf(
+	    "jwt verify: %s\n",
+	    verified.ok() ? "ok" : statusText(verified.status)
+	);
+
+	auto hashed = espcrypto::password::hash("hunter2");
+	if (!hashed.ok()) {
+		Serial.printf("hash failed: %s\n", statusText(hashed.status));
+		return;
+	}
+	Serial.printf("password hash: %s\n", hashed.value.c_str());
+
+	auto ok = espcrypto::password::verify("hunter2", hashed.value);
+	Serial.printf("password verify: %s\n", ok.ok() ? "ok" : statusText(ok.status));
 }
 
 void loop() {
-	vTaskDelay(pdMS_TO_TICKS(1000));
 }

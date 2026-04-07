@@ -1,4 +1,4 @@
-# ESPCrypto exercises require ESP-IDF/Arduino runtime to access hardware
-# accelerators for AES/SHA. Host builds only emit this notice so CI
-# completes quickly; see test/test_esp_crypto for Unity-based device tests.
-message(STATUS "ESPCrypto: tests are disabled for the host build.")
+add_executable(host_api_smoke host_api_smoke.cpp)
+target_include_directories(host_api_smoke PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../src)
+target_compile_features(host_api_smoke PRIVATE cxx_std_17)
+add_test(NAME host_api_smoke COMMAND host_api_smoke)

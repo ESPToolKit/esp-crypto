@@ -1,90 +1,78 @@
 #include <Arduino.h>
 #include <ESPCrypto.h>
 
-MemoryKeyStore memoryStore;
+#include <string>
+#include <vector>
 
-void demoKeystore() {
-	KeyHandle handle{String("demo-key"), 1};
-	const char *pem =
-	    "-----BEGIN PRIVATE KEY-----\n...replace-with-real-key...\n-----END PRIVATE KEY-----";
-	ESPCrypto::storeKey(
-	    memoryStore,
-	    handle,
-	    CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>(pem), strlen(pem))
-	);
-	auto loaded = ESPCrypto::loadKey(memoryStore, handle, KeyFormat::Pem, KeyKind::Private);
-	if (loaded.ok()) {
-		auto sig = ESPCrypto::rsaSign(
-		    loaded.value,
-		    CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>("payload"), 7),
-		    ShaVariant::SHA256
-		);
-		Serial.printf("Loaded key and produced signature? %s\n", sig.ok() ? "yes" : "no");
-	} else {
-		Serial.printf("Key load failed: %s\n", loaded.status.message.c_str());
-	}
+namespace {
+const char *statusText(const CryptoStatusDetail &status) {
+	return status.message.empty() ? toString(status.code) : status.message.c_str();
 }
-
-void demoStreaming() {
-	// Streaming SHA256
-	ShaCtx shaCtx;
-	shaCtx.begin(ShaVariant::SHA256);
-	shaCtx.update(CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>("hello "), 6));
-	shaCtx.update(CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>("world"), 5));
-	uint8_t digest[32] = {0};
-	shaCtx.finish(CryptoSpan<uint8_t>(digest));
-	Serial.print("SHA256(stream) digest[0..3]: ");
-	for (int i = 0; i < 4; ++i) {
-		Serial.printf("%02x", digest[i]);
-	}
-	Serial.println();
-
-	// AES-GCM streaming with caller buffers
-	std::vector<uint8_t> key(16, 0x01);
-	std::vector<uint8_t> iv(12, 0x02);
-	std::vector<uint8_t> plaintext = {'E', 'S', 'P', 'C', 'r', 'y', 'p', 't', 'o'};
-	std::vector<uint8_t> ciphertext(plaintext.size(), 0);
-	std::vector<uint8_t> tag(16, 0);
-
-	AesGcmCtx enc;
-	enc.beginEncrypt(key, CryptoSpan<const uint8_t>(iv), CryptoSpan<const uint8_t>());
-	enc.update(CryptoSpan<const uint8_t>(plaintext), CryptoSpan<uint8_t>(ciphertext));
-	enc.finish(CryptoSpan<uint8_t>(tag));
-
-	std::vector<uint8_t> decrypted(plaintext.size(), 0);
-	AesGcmCtx dec;
-	dec.beginDecrypt(
-	    key,
-	    CryptoSpan<const uint8_t>(iv),
-	    CryptoSpan<const uint8_t>(),
-	    CryptoSpan<const uint8_t>(tag)
-	);
-	dec.update(CryptoSpan<const uint8_t>(ciphertext), CryptoSpan<uint8_t>(decrypted));
-	auto decStatus = dec.finish(CryptoSpan<uint8_t>(tag));
-	Serial.printf(
-	    "AES-GCM streaming decrypt ok? %s\n",
-	    decStatus.ok() && ESPCrypto::constantTimeEq(plaintext, decrypted) ? "yes" : "no"
-	);
-}
-
-void demoNonceStrategies() {
-	std::vector<uint8_t> key(16, 0x03);
-	std::vector<uint8_t> plaintext = {0x01, 0x02};
-	GcmNonceOptions opts;
-	opts.strategy = GcmNonceStrategy::Counter64_Random32;
-	auto msg = ESPCrypto::aesGcmEncryptAuto(key, plaintext, {}, 12, opts);
-	Serial.printf("GCM iv (counter strategy) size: %u\n", msg.value.iv.size());
-}
+} // namespace
 
 void setup() {
 	Serial.begin(115200);
 	delay(1000);
-	Serial.println("ESPCrypto keystore + streaming demo");
-	demoKeystore();
-	demoStreaming();
-	demoNonceStrategies();
-	auto deviceKey = ESPCrypto::deriveDeviceKey("example", CryptoSpan<const uint8_t>(), 32);
-	Serial.printf("Device-bound key derived? %s\n", deviceKey.ok() ? "yes" : "no");
+
+	MemoryKeyStore memoryStore;
+	KeyHandle handle{"demo-key", 1};
+	std::vector<uint8_t> rawKey(32, 0x44);
+
+	auto stored = espcrypto::keystore::store(
+	    memoryStore,
+	    handle,
+	    CryptoSpan<const uint8_t>(rawKey)
+	);
+	Serial.printf("store key: %s\n", stored.ok() ? "ok" : statusText(stored.status));
+
+	auto loaded = espcrypto::keystore::load(memoryStore, handle, KeyFormat::Raw, KeyKind::Symmetric);
+	Serial.printf("load key: %s\n", loaded.ok() ? "ok" : statusText(loaded.status));
+
+	ShaCtx sha;
+	uint8_t digest[32] = {0};
+	sha.begin(ShaVariant::SHA256);
+	sha.update(CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>("hello"), 5));
+	sha.update(CryptoSpan<const uint8_t>(reinterpret_cast<const uint8_t *>(" world"), 6));
+	sha.finish(CryptoSpan<uint8_t>(digest, sizeof(digest)));
+	Serial.println("streaming sha complete");
+
+	std::vector<uint8_t> aesKey(16, 0x33);
+	std::vector<uint8_t> iv(12, 0x11);
+	std::vector<uint8_t> aad = {'a', 'a', 'd'};
+	std::vector<uint8_t> plaintext = {'c', 'h', 'u', 'n', 'k'};
+	std::vector<uint8_t> ciphertext(plaintext.size(), 0);
+	std::vector<uint8_t> tag(16, 0);
+	std::vector<uint8_t> decrypted(plaintext.size(), 0);
+
+	AesGcmCtx enc;
+	AesGcmCtx dec;
+	auto encStart = enc.beginEncrypt(aesKey, CryptoSpan<const uint8_t>(iv), CryptoSpan<const uint8_t>(aad));
+	auto encUpdate = enc.update(CryptoSpan<const uint8_t>(plaintext), CryptoSpan<uint8_t>(ciphertext));
+	auto encFinish = enc.finish(CryptoSpan<uint8_t>(tag));
+	auto decStart = dec.beginDecrypt(
+	    aesKey,
+	    CryptoSpan<const uint8_t>(iv),
+	    CryptoSpan<const uint8_t>(aad),
+	    CryptoSpan<const uint8_t>(tag)
+	);
+	auto decUpdate = dec.update(CryptoSpan<const uint8_t>(ciphertext), CryptoSpan<uint8_t>(decrypted));
+	auto decFinish = dec.finish(CryptoSpan<uint8_t>(tag));
+
+	Serial.printf(
+	    "streaming gcm: %s\n",
+	    (encStart.ok() && encUpdate.ok() && encFinish.ok() && decStart.ok() && decUpdate.ok() &&
+	     decFinish.ok() && espcrypto::runtime::constantTimeEq(plaintext, decrypted))
+	        ? "ok"
+	        : "failed"
+	);
+
+	GcmNonceOptions nonceOptions;
+	nonceOptions.strategy = GcmNonceStrategy::Counter64_Random32;
+	auto message = espcrypto::symmetric::aesGcmEncryptAuto(aesKey, plaintext, {}, 12, nonceOptions);
+	Serial.printf("auto nonce encrypt: %s\n", message.ok() ? "ok" : statusText(message.status));
+
+	auto deviceKey = espcrypto::device::deriveKey("example", CryptoSpan<const uint8_t>(), 32);
+	Serial.printf("device key: %s\n", deviceKey.ok() ? "ok" : statusText(deviceKey.status));
 }
 
 void loop() {

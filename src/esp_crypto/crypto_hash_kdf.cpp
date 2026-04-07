@@ -65,117 +65,133 @@ bool tryHardwareSha(ShaVariant variant, const uint8_t *data, size_t length, uint
 #endif
 }
 
+struct ShaCtx::Impl {
+	const mbedtls_md_info_t *info = nullptr;
+	mbedtls_md_context_t ctx;
+	bool started = false;
+};
+
 ShaCtx::ShaCtx() {
-	mbedtls_md_init(&ctx);
+	impl = new Impl();
+	mbedtls_md_init(&impl->ctx);
 }
 
 ShaCtx::~ShaCtx() {
-	mbedtls_md_free(&ctx);
+	mbedtls_md_free(&impl->ctx);
+	delete impl;
 }
 
 CryptoStatusDetail ShaCtx::begin(ShaVariant variant, bool /*preferHardware*/) {
 	// Reset any prior digest allocation so repeated begin() calls do not leak.
-	mbedtls_md_free(&ctx);
-	mbedtls_md_init(&ctx);
-	started = false;
-	info = nullptr;
+	mbedtls_md_free(&impl->ctx);
+	mbedtls_md_init(&impl->ctx);
+	impl->started = false;
+	impl->info = nullptr;
 
-	info = mdInfoForVariant(variant);
-	if (!info) {
+	impl->info = mdInfoForVariant(variant);
+	if (!impl->info) {
 		return makeStatus(CryptoStatus::InvalidInput, "invalid sha variant");
 	}
-	if (mbedtls_md_setup(&ctx, info, 0) != 0) {
+	if (mbedtls_md_setup(&impl->ctx, impl->info, 0) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "md setup failed");
 	}
-	if (mbedtls_md_starts(&ctx) != 0) {
+	if (mbedtls_md_starts(&impl->ctx) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "md start failed");
 	}
-	started = true;
+	impl->started = true;
 	return makeStatus(CryptoStatus::Ok);
 }
 
 CryptoStatusDetail ShaCtx::update(CryptoSpan<const uint8_t> data) {
-	if (!started) {
+	if (!impl->started) {
 		return makeStatus(CryptoStatus::InvalidInput, "sha not started");
 	}
 	if (data.empty()) {
 		return makeStatus(CryptoStatus::Ok);
 	}
-	if (mbedtls_md_update(&ctx, data.data(), data.size()) != 0) {
+	if (mbedtls_md_update(&impl->ctx, data.data(), data.size()) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "md update failed");
 	}
 	return makeStatus(CryptoStatus::Ok);
 }
 
 CryptoStatusDetail ShaCtx::finish(CryptoSpan<uint8_t> out) {
-	if (!started || !info) {
+	if (!impl->started || !impl->info) {
 		return makeStatus(CryptoStatus::InvalidInput, "sha not started");
 	}
-	size_t need = mbedtls_md_get_size(info);
+	size_t need = mbedtls_md_get_size(impl->info);
 	if (out.size() < need) {
 		return makeStatus(CryptoStatus::BufferTooSmall, "digest buffer too small");
 	}
-	if (mbedtls_md_finish(&ctx, out.data()) != 0) {
+	if (mbedtls_md_finish(&impl->ctx, out.data()) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "md finish failed");
 	}
-	started = false;
+	impl->started = false;
 	return makeStatus(CryptoStatus::Ok);
 }
 
+struct HmacCtx::Impl {
+	const mbedtls_md_info_t *info = nullptr;
+	mbedtls_md_context_t ctx;
+	bool started = false;
+};
+
 HmacCtx::HmacCtx() {
-	mbedtls_md_init(&ctx);
+	impl = new Impl();
+	mbedtls_md_init(&impl->ctx);
 }
 
 HmacCtx::~HmacCtx() {
-	mbedtls_md_free(&ctx);
+	mbedtls_md_free(&impl->ctx);
+	delete impl;
 }
 
 CryptoStatusDetail HmacCtx::begin(ShaVariant variant, CryptoSpan<const uint8_t> key) {
 	// Reset any prior digest/HMAC allocation so repeated begin() calls do not leak.
-	mbedtls_md_free(&ctx);
-	mbedtls_md_init(&ctx);
-	started = false;
-	info = nullptr;
+	mbedtls_md_free(&impl->ctx);
+	mbedtls_md_init(&impl->ctx);
+	impl->started = false;
+	impl->info = nullptr;
 
-	info = mdInfoForVariant(variant);
-	if (!info || key.empty()) {
+	impl->info = mdInfoForVariant(variant);
+	if (!impl->info || key.empty()) {
 		return makeStatus(CryptoStatus::InvalidInput, "invalid hmac params");
 	}
-	if (mbedtls_md_setup(&ctx, info, 1) != 0) {
+	if (mbedtls_md_setup(&impl->ctx, impl->info, 1) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "md setup failed");
 	}
-	if (mbedtls_md_hmac_starts(&ctx, key.data(), key.size()) != 0) {
+	if (mbedtls_md_hmac_starts(&impl->ctx, key.data(), key.size()) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "hmac start failed");
 	}
-	started = true;
+	impl->started = true;
 	return makeStatus(CryptoStatus::Ok);
 }
 
 CryptoStatusDetail HmacCtx::update(CryptoSpan<const uint8_t> data) {
-	if (!started) {
+	if (!impl->started) {
 		return makeStatus(CryptoStatus::InvalidInput, "hmac not started");
 	}
 	if (data.empty()) {
 		return makeStatus(CryptoStatus::Ok);
 	}
-	if (mbedtls_md_hmac_update(&ctx, data.data(), data.size()) != 0) {
+	if (mbedtls_md_hmac_update(&impl->ctx, data.data(), data.size()) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "hmac update failed");
 	}
 	return makeStatus(CryptoStatus::Ok);
 }
 
 CryptoStatusDetail HmacCtx::finish(CryptoSpan<uint8_t> out) {
-	if (!started || !info) {
+	if (!impl->started || !impl->info) {
 		return makeStatus(CryptoStatus::InvalidInput, "hmac not started");
 	}
-	size_t need = mbedtls_md_get_size(info);
+	size_t need = mbedtls_md_get_size(impl->info);
 	if (out.size() < need) {
 		return makeStatus(CryptoStatus::BufferTooSmall, "digest buffer too small");
 	}
-	if (mbedtls_md_hmac_finish(&ctx, out.data()) != 0) {
+	if (mbedtls_md_hmac_finish(&impl->ctx, out.data()) != 0) {
 		return makeStatus(CryptoStatus::InternalError, "hmac finish failed");
 	}
-	started = false;
+	impl->started = false;
 	return makeStatus(CryptoStatus::Ok);
 }
 
@@ -272,12 +288,15 @@ int pbkdf2Sha256(
 #endif
 }
 
-bool parsePasswordHash(
-    const std::string &encoded,
-    uint8_t &cost,
-    std::vector<uint8_t> &salt,
-    std::vector<uint8_t> &hash
-) {
+namespace {
+struct ParsedPasswordHash {
+	uint32_t version = 0;
+	uint32_t iterations = 0;
+	std::vector<uint8_t> salt;
+	std::vector<uint8_t> hash;
+};
+
+bool parsePasswordHash(const std::string &encoded, ParsedPasswordHash &parsed) {
 	std::vector<std::string> parts;
 	size_t start = 0;
 	while (start <= encoded.size()) {
@@ -289,35 +308,96 @@ bool parsePasswordHash(
 		parts.push_back(encoded.substr(start, pos - start));
 		start = pos + 1;
 	}
-	if (parts.size() != 6 || parts[1] != "esphash" || parts[2] != "v1") {
+	if (parts.size() != 6 || parts[1] != "esphash") {
 		return false;
 	}
-	const std::string &costPart = parts[3];
-	if (costPart.empty()) {
+	const std::string &versionPart = parts[2];
+	const std::string &iterationPart = parts[3];
+	if (iterationPart.empty()) {
 		return false;
 	}
-	uint32_t parsedCost = 0;
-	for (char ch : costPart) {
+	uint32_t parsedNumber = 0;
+	for (char ch : iterationPart) {
 		if (ch < '0' || ch > '9') {
 			return false;
 		}
-		parsedCost = parsedCost * 10u + static_cast<uint32_t>(ch - '0');
-		if (parsedCost > 31u) {
+		parsedNumber = parsedNumber * 10u + static_cast<uint32_t>(ch - '0');
+		if (parsedNumber > 1000000000u) {
 			return false;
 		}
 	}
-	cost = static_cast<uint8_t>(parsedCost);
-	if (!base64Decode(parts[4], Base64Alphabet::Standard, salt)) {
+	if (versionPart == "v1") {
+		if (parsedNumber > 31u) {
+			return false;
+		}
+		parsed.version = 1;
+		parsed.iterations = 1u << parsedNumber;
+	} else if (versionPart == "v2") {
+		if (parsedNumber == 0) {
+			return false;
+		}
+		parsed.version = 2;
+		parsed.iterations = parsedNumber;
+	} else {
 		return false;
 	}
-	if (!base64Decode(parts[5], Base64Alphabet::Standard, hash)) {
+	if (!base64Decode(parts[4], Base64Alphabet::Standard, parsed.salt)) {
+		return false;
+	}
+	if (!base64Decode(parts[5], Base64Alphabet::Standard, parsed.hash)) {
 		return false;
 	}
 	return true;
 }
 
-CryptoResult<std::vector<uint8_t>>
-ESPCrypto::shaResult(CryptoSpan<const uint8_t> data, const ShaOptions &options) {
+uint32_t passwordIterationFloor(const PasswordHashOptions &options) {
+	markRuntimeInitialized();
+	const CryptoPolicy &cryptoPolicy = mutablePolicy();
+	return std::max<uint32_t>(options.minIterations, cryptoPolicy.minPbkdf2Iterations);
+}
+
+CryptoResult<std::vector<uint8_t>> derivePbkdf2(
+    std::string_view password,
+    CryptoSpan<const uint8_t> salt,
+    uint32_t iterations,
+    size_t outputLength,
+    bool enforcePolicy
+) {
+	CryptoResult<std::vector<uint8_t>> result;
+	if (password.empty() || salt.empty() || outputLength == 0) {
+		result.status = makeStatus(CryptoStatus::InvalidInput, "missing password/salt/len");
+		return result;
+	}
+	markRuntimeInitialized();
+	const CryptoPolicy &cryptoPolicy = mutablePolicy();
+	if (enforcePolicy && !cryptoPolicy.allowLegacy && iterations < cryptoPolicy.minPbkdf2Iterations) {
+		result.status = makeStatus(CryptoStatus::PolicyViolation, "iterations below policy");
+		return result;
+	}
+	result.value.assign(outputLength, 0);
+	int ret = pbkdf2Sha256(
+	    reinterpret_cast<const unsigned char *>(password.data()),
+	    password.size(),
+	    salt.data(),
+	    salt.size(),
+	    iterations,
+	    result.value.data(),
+	    result.value.size()
+	);
+	if (ret != 0) {
+		secureZero(result.value.data(), result.value.size());
+		result.value.clear();
+		result.status = makeStatus(CryptoStatus::InternalError, "pbkdf2 failed");
+		return result;
+	}
+	result.status = makeStatus(CryptoStatus::Ok);
+	return result;
+}
+
+} // namespace
+
+namespace espcrypto::hash {
+CryptoResult<std::vector<uint8_t>> sha(CryptoSpan<const uint8_t> data, const ShaOptions &options) {
 	CryptoResult<std::vector<uint8_t>> result;
 	if (!data.data() && data.size() > 0) {
 		result.status = makeStatus(CryptoStatus::InvalidInput, "null data");
@@ -352,8 +432,11 @@ ESPCrypto::shaResult(CryptoSpan<const uint8_t> data, const ShaOptions &options) 
 	return result;
 }
 
-CryptoResult<void>
-ESPCrypto::sha(CryptoSpan<const uint8_t> data, CryptoSpan<uint8_t> out, const ShaOptions &options) {
+CryptoResult<void> sha(
+    CryptoSpan<const uint8_t> data,
+    CryptoSpan<uint8_t> out,
+    const ShaOptions &options
+) {
 	CryptoResult<void> result;
 	size_t needed = digestLength(options.variant);
 	if (needed == 0) {
@@ -364,7 +447,7 @@ ESPCrypto::sha(CryptoSpan<const uint8_t> data, CryptoSpan<uint8_t> out, const Sh
 		result.status = makeStatus(CryptoStatus::BufferTooSmall, "digest buffer too small");
 		return result;
 	}
-	auto hashed = shaResult(data, options);
+	auto hashed = sha(data, options);
 	if (!hashed.ok()) {
 		result.status = hashed.status;
 		return result;
@@ -374,66 +457,96 @@ ESPCrypto::sha(CryptoSpan<const uint8_t> data, CryptoSpan<uint8_t> out, const Sh
 	return result;
 }
 
-std::vector<uint8_t> ESPCrypto::sha(const uint8_t *data, size_t length, const ShaOptions &options) {
-	auto result = shaResult(CryptoSpan<const uint8_t>(data, length), options);
-	return result.ok() ? result.value : std::vector<uint8_t>();
-}
-
-std::vector<uint8_t> ESPCrypto::sha(const std::vector<uint8_t> &data, const ShaOptions &options) {
-	return sha(data.data(), data.size(), options);
-}
-
-String ESPCrypto::shaHex(const uint8_t *data, size_t length, const ShaOptions &options) {
-	auto digest = sha(data, length, options);
-	if (digest.empty()) {
-		return String();
+std::string shaHex(CryptoSpan<const uint8_t> data, const ShaOptions &options) {
+	auto digest = sha(data, options);
+	if (!digest.ok()) {
+		return std::string();
 	}
 	static const char *HEX_DIGITS = "0123456789abcdef";
 	std::string hex;
-	hex.reserve(digest.size() * 2);
-	for (uint8_t b : digest) {
+	hex.reserve(digest.value.size() * 2);
+	for (uint8_t b : digest.value) {
 		hex.push_back(HEX_DIGITS[(b >> 4) & 0x0F]);
 		hex.push_back(HEX_DIGITS[b & 0x0F]);
 	}
-	return String(hex.c_str());
+	return hex;
 }
 
-String ESPCrypto::shaHex(const String &text, const ShaOptions &options) {
-	return shaHex(reinterpret_cast<const uint8_t *>(text.c_str()), text.length(), options);
+std::string shaHex(std::string_view text, const ShaOptions &options) {
+	return shaHex(
+	    CryptoSpan<const uint8_t>(
+	        reinterpret_cast<const uint8_t *>(text.data()),
+	        text.size()
+	    ),
+	    options
+	);
+}
+} // namespace espcrypto::hash
+
+namespace espcrypto::password {
+CryptoResult<uint32_t> calibrateIterations(const PasswordHashOptions &options) {
+	CryptoResult<uint32_t> result;
+	if (options.saltBytes == 0 || options.outputBytes == 0 || options.targetMillis == 0) {
+		result.status = makeStatus(CryptoStatus::InvalidInput, "invalid calibration options");
+		return result;
+	}
+	std::vector<uint8_t> salt(options.saltBytes, 0xA5);
+	std::vector<uint8_t> derived(options.outputBytes, 0);
+	const std::string probePassword = "espcrypto-calibration";
+	uint32_t probeIterations = 4096;
+	uint64_t elapsedMs = 0;
+	for (;;) {
+		uint64_t startedMs = monotonicMillis();
+		int ret = pbkdf2Sha256(
+		    reinterpret_cast<const unsigned char *>(probePassword.data()),
+		    probePassword.size(),
+		    salt.data(),
+		    salt.size(),
+		    probeIterations,
+		    derived.data(),
+		    derived.size()
+		);
+		elapsedMs = std::max<uint64_t>(1, monotonicMillis() - startedMs);
+		secureZero(derived.data(), derived.size());
+		if (ret != 0) {
+			result.status = makeStatus(CryptoStatus::InternalError, "pbkdf2 calibration failed");
+			return result;
+		}
+		if (elapsedMs >= 20 || probeIterations >= (1u << 22)) {
+			break;
+		}
+		probeIterations *= 4;
+	}
+	uint64_t projected =
+	    (static_cast<uint64_t>(probeIterations) * static_cast<uint64_t>(options.targetMillis)) /
+	    elapsedMs;
+	uint32_t floorIterations = passwordIterationFloor(options);
+	result.value = static_cast<uint32_t>(std::min<uint64_t>(projected, UINT32_MAX));
+	result.value = std::max(result.value, floorIterations);
+	result.status = makeStatus(CryptoStatus::Ok);
+	return result;
 }
 
-String ESPCrypto::hashString(const String &input, const PasswordHashOptions &options) {
-	auto result = hashStringResult(input, options);
-	return result.ok() ? result.value : String();
-}
-
-bool ESPCrypto::verifyString(const String &input, const String &encoded) {
-	auto result = verifyStringResult(input, encoded);
-	return result.ok();
-}
-
-CryptoResult<String>
-ESPCrypto::hashStringResult(const String &input, const PasswordHashOptions &options) {
-	CryptoResult<String> result;
-	if (input.length() == 0 || options.saltBytes == 0 || options.outputBytes == 0) {
+CryptoResult<std::string> hash(std::string_view input, const PasswordHashOptions &options) {
+	CryptoResult<std::string> result;
+	if (input.empty() || options.saltBytes == 0 || options.outputBytes == 0) {
 		result.status = makeStatus(CryptoStatus::InvalidInput, "missing password or params");
 		return result;
 	}
 	std::vector<uint8_t> salt(options.saltBytes, 0);
 	fillRandom(salt.data(), salt.size());
-	uint8_t cost = std::min<uint8_t>(options.cost, 31);
-	uint32_t iterations = 1u << cost;
-	markRuntimeInitialized();
-	const CryptoPolicy &cryptoPolicy = mutablePolicy();
-	if (!cryptoPolicy.allowLegacy && iterations < cryptoPolicy.minPbkdf2Iterations) {
-		uint8_t adjustedCost = cost;
-		while ((1u << adjustedCost) < cryptoPolicy.minPbkdf2Iterations && adjustedCost < 31) {
-			adjustedCost++;
+	uint32_t iterations = options.iterations;
+	if (iterations == 0) {
+		auto calibrated = calibrateIterations(options);
+		if (!calibrated.ok()) {
+			result.status = calibrated.status;
+			return result;
 		}
-		cost = adjustedCost;
-		iterations = 1u << cost;
+		iterations = calibrated.value;
 	}
-	auto derived = pbkdf2(input, CryptoSpan<const uint8_t>(salt), iterations, options.outputBytes);
+	iterations = std::max(iterations, passwordIterationFloor(options));
+	auto derived =
+	    derivePbkdf2(input, CryptoSpan<const uint8_t>(salt), iterations, options.outputBytes, false);
 	if (!derived.ok()) {
 		result.status = derived.status;
 		return result;
@@ -446,48 +559,49 @@ ESPCrypto::hashStringResult(const String &input, const PasswordHashOptions &opti
 		result.status = makeStatus(CryptoStatus::InternalError, "base64 encode failed");
 		return result;
 	}
-	std::string encoded = "$esphash$v1$" + std::to_string(cost) + "$" + saltB64 + "$" + hashB64;
-	result.value = String(encoded.c_str());
+	result.value =
+	    "$esphash$v2$" + std::to_string(iterations) + "$" + saltB64 + "$" + hashB64;
 	result.status = makeStatus(CryptoStatus::Ok);
 	return result;
 }
 
-CryptoResult<void> ESPCrypto::verifyStringResult(const String &input, const String &encoded) {
+CryptoResult<void>
+verify(std::string_view input, std::string_view encoded, const PasswordVerifyOptions &options) {
 	CryptoResult<void> result;
-	if (input.length() == 0 || encoded.length() == 0) {
+	if (input.empty() || encoded.empty()) {
 		result.status = makeStatus(CryptoStatus::InvalidInput, "missing password or encoded hash");
 		return result;
 	}
-	uint8_t cost = 0;
-	std::vector<uint8_t> salt;
-	std::vector<uint8_t> hash;
-	std::string encodedStd(encoded.c_str(), encoded.length());
-	if (!parsePasswordHash(encodedStd, cost, salt, hash)) {
+	ParsedPasswordHash parsed;
+	if (!parsePasswordHash(std::string(encoded), parsed)) {
 		result.status = makeStatus(CryptoStatus::DecodeError, "invalid esphash envelope");
 		return result;
 	}
-	if (salt.empty() || hash.empty()) {
+	if (parsed.salt.empty() || parsed.hash.empty()) {
 		result.status = makeStatus(CryptoStatus::DecodeError, "invalid esphash parts");
 		return result;
 	}
-	if (cost > 31) {
-		result.status = makeStatus(CryptoStatus::DecodeError, "invalid esphash envelope");
+	uint32_t floorIterations = passwordIterationFloor(PasswordHashOptions{});
+	if ((parsed.version == 1 || parsed.iterations < floorIterations) && !options.allowLegacy) {
+		result.status = makeStatus(
+		    CryptoStatus::PolicyViolation,
+		    "password hash requires explicit legacy compatibility"
+		);
 		return result;
 	}
-	uint32_t iterations = 1u << cost;
-	markRuntimeInitialized();
-	const CryptoPolicy &cryptoPolicy = mutablePolicy();
-	if (!cryptoPolicy.allowLegacy && iterations < cryptoPolicy.minPbkdf2Iterations) {
-		result.status = makeStatus(CryptoStatus::PolicyViolation, "pbkdf2 iterations below policy");
-		return result;
-	}
-	auto derived = pbkdf2(input, CryptoSpan<const uint8_t>(salt), iterations, hash.size());
+	auto derived = derivePbkdf2(
+	    input,
+	    CryptoSpan<const uint8_t>(parsed.salt),
+	    parsed.iterations,
+	    parsed.hash.size(),
+	    false
+	);
 	if (!derived.ok()) {
 		result.status = derived.status;
 		return result;
 	}
 	bool match = constantTimeEquals(
-	    CryptoSpan<const uint8_t>(hash),
+	    CryptoSpan<const uint8_t>(parsed.hash),
 	    CryptoSpan<const uint8_t>(derived.value)
 	);
 	secureZero(derived.value.data(), derived.value.size());
@@ -495,9 +609,11 @@ CryptoResult<void> ESPCrypto::verifyStringResult(const String &input, const Stri
 	                      : makeStatus(CryptoStatus::VerifyFailed, "hash mismatch");
 	return result;
 }
+} // namespace espcrypto::password
 
+namespace espcrypto::kdf {
 CryptoResult<std::vector<uint8_t>>
-ESPCrypto::hmac(ShaVariant variant, CryptoSpan<const uint8_t> key, CryptoSpan<const uint8_t> data) {
+hmac(ShaVariant variant, CryptoSpan<const uint8_t> key, CryptoSpan<const uint8_t> data) {
 	CryptoResult<std::vector<uint8_t>> result;
 	const mbedtls_md_info_t *info = mdInfoForVariant(variant);
 	if (!info) {
@@ -532,7 +648,7 @@ ESPCrypto::hmac(ShaVariant variant, CryptoSpan<const uint8_t> key, CryptoSpan<co
 	return result;
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::hkdf(
+CryptoResult<std::vector<uint8_t>> hkdf(
     ShaVariant variant,
     CryptoSpan<const uint8_t> salt,
     CryptoSpan<const uint8_t> ikm,
@@ -575,11 +691,8 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::hkdf(
 			blockInput.insert(blockInput.end(), info.data(), info.data() + info.size());
 		}
 		blockInput.push_back(static_cast<uint8_t>(i + 1));
-		auto block = hmac(
-		    variant,
-		    CryptoSpan<const uint8_t>(prk.value),
-		    CryptoSpan<const uint8_t>(blockInput)
-		);
+		auto block =
+		    hmac(variant, CryptoSpan<const uint8_t>(prk.value), CryptoSpan<const uint8_t>(blockInput));
 		secureZero(blockInput.data(), blockInput.size());
 		if (!block.ok()) {
 			secureZero(prk.value.data(), prk.value.size());
@@ -596,36 +709,12 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::hkdf(
 	return result;
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::pbkdf2(
-    const String &password, CryptoSpan<const uint8_t> salt, uint32_t iterations, size_t outputLength
+CryptoResult<std::vector<uint8_t>> pbkdf2(
+    std::string_view password,
+    CryptoSpan<const uint8_t> salt,
+    uint32_t iterations,
+    size_t outputLength
 ) {
-	CryptoResult<std::vector<uint8_t>> result;
-	if (password.length() == 0 || salt.empty() || outputLength == 0) {
-		result.status = makeStatus(CryptoStatus::InvalidInput, "missing password/salt/len");
-		return result;
-	}
-	markRuntimeInitialized();
-	const CryptoPolicy &cryptoPolicy = mutablePolicy();
-	if (!cryptoPolicy.allowLegacy && iterations < cryptoPolicy.minPbkdf2Iterations) {
-		result.status = makeStatus(CryptoStatus::PolicyViolation, "iterations below policy");
-		return result;
-	}
-	result.value.assign(outputLength, 0);
-	int ret = pbkdf2Sha256(
-	    reinterpret_cast<const unsigned char *>(password.c_str()),
-	    password.length(),
-	    salt.data(),
-	    salt.size(),
-	    iterations,
-	    result.value.data(),
-	    result.value.size()
-	);
-	if (ret != 0) {
-		secureZero(result.value.data(), result.value.size());
-		result.value.clear();
-		result.status = makeStatus(CryptoStatus::InternalError, "pbkdf2 failed");
-		return result;
-	}
-	result.status = makeStatus(CryptoStatus::Ok);
-	return result;
+	return derivePbkdf2(password, salt, iterations, outputLength, true);
 }
+} // namespace espcrypto::kdf

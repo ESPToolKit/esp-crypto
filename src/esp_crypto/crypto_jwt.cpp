@@ -1,7 +1,7 @@
 #include "internal/crypto_internal.h"
 
 CryptoResult<CryptoKey>
-selectJwkFromSet(const JsonDocument &jwks, const String &kid, JwtAlgorithm algHint) {
+selectJwkFromSet(const JsonDocument &jwks, const std::string &kid, JwtAlgorithm algHint) {
 	CryptoResult<CryptoKey> result;
 	JsonArrayConst keys = jwks["keys"].as<JsonArrayConst>();
 	if (keys.isNull()) {
@@ -11,7 +11,7 @@ selectJwkFromSet(const JsonDocument &jwks, const String &kid, JwtAlgorithm algHi
 	for (JsonVariantConst v : keys) {
 		JsonObjectConst jwk = v.as<JsonObjectConst>();
 		const char *jwkKid = jwk["kid"].as<const char *>();
-		if (kid.length() > 0 && (!jwkKid || kid != jwkKid)) {
+		if (!kid.empty() && (!jwkKid || kid != jwkKid)) {
 			continue;
 		}
 		const char *algStr = jwk["alg"].as<const char *>();
@@ -26,10 +26,10 @@ selectJwkFromSet(const JsonDocument &jwks, const String &kid, JwtAlgorithm algHi
 		}
 		result.status = parsed.status;
 	}
-	if (kid.length() > 0) {
+	if (!kid.empty()) {
 		result.status = makeStatus(CryptoStatus::DecodeError, "kid not found");
 	} else if (!result.status.ok()) {
-		// Keep last parse error
+		// Keep last parse error.
 	} else {
 		result.status = makeStatus(CryptoStatus::DecodeError, "no jwk matched");
 	}
@@ -96,7 +96,10 @@ bool verifySignature(
 		if (!hmacSha256(key, data, length, expected)) {
 			return false;
 		}
-		return constantTimeEquals(expected, signature);
+		return constantTimeEquals(
+		    CryptoSpan<const uint8_t>(expected),
+		    CryptoSpan<const uint8_t>(signature)
+		);
 	}
 	case JwtAlgorithm::RS256:
 		return pkVerifyInternal(key, MBEDTLS_PK_RSA, ShaVariant::SHA256, data, length, signature);
@@ -108,34 +111,13 @@ bool verifySignature(
 	}
 }
 
-String ESPCrypto::createJwt(
-    const JsonDocument &claims, const std::string &key, const JwtSignOptions &options
+namespace espcrypto::jwt {
+CryptoResult<std::string> create(
+    const JsonDocument &claims,
+    std::string_view key,
+    const JwtSignOptions &options
 ) {
-	auto result = createJwtResult(claims, key, options);
-	return result.ok() ? result.value : String();
-}
-
-bool ESPCrypto::verifyJwt(
-    const String &token,
-    const std::string &key,
-    JsonDocument &outClaims,
-    String &error,
-    const JwtVerifyOptions &options
-) {
-	auto result = verifyJwtResult(token, key, outClaims, options);
-	if (!result.ok()) {
-		error = result.status.message.length() > 0 ? result.status.message
-		                                           : String(toString(result.status.code));
-		return false;
-	}
-	error = "";
-	return true;
-}
-
-CryptoResult<String> ESPCrypto::createJwtResult(
-    const JsonDocument &claims, const std::string &key, const JwtSignOptions &options
-) {
-	CryptoResult<String> result;
+	CryptoResult<std::string> result;
 	if (key.empty()) {
 		result.status = makeStatus(CryptoStatus::InvalidInput, "key missing");
 		return result;
@@ -148,20 +130,22 @@ CryptoResult<String> ESPCrypto::createJwtResult(
 	}
 	header["alg"] = algName.c_str();
 	header["typ"] = "JWT";
-	if (options.keyId.length() > 0) {
+	if (!options.keyId.empty()) {
 		header["kid"] = options.keyId.c_str();
 	}
+
 	JsonDocument payload;
 	payload.set(claims);
-	if (options.issuer.length() > 0 && payload["iss"].isNull()) {
+	if (!options.issuer.empty() && payload["iss"].isNull()) {
 		payload["iss"] = options.issuer.c_str();
 	}
-	if (options.subject.length() > 0 && payload["sub"].isNull()) {
+	if (!options.subject.empty() && payload["sub"].isNull()) {
 		payload["sub"] = options.subject.c_str();
 	}
-	if (options.audience.length() > 0 && payload["aud"].isNull()) {
+	if (!options.audience.empty() && payload["aud"].isNull()) {
 		payload["aud"] = options.audience.c_str();
 	}
+
 	uint32_t now = currentTimeSeconds(
 	    options.currentTimestamp != 0 ? options.currentTimestamp : options.issuedAt
 	);
@@ -203,11 +187,12 @@ CryptoResult<String> ESPCrypto::createJwtResult(
 		result.status = makeStatus(CryptoStatus::DecodeError, "base64 encode failed");
 		return result;
 	}
+
 	std::string signingInput = encodedHeader + "." + encodedPayload;
 	std::vector<uint8_t> signature;
 	if (!signJwt(
 	        options.algorithm,
-	        key,
+	        std::string(key),
 	        reinterpret_cast<const uint8_t *>(signingInput.data()),
 	        signingInput.size(),
 	        signature
@@ -215,32 +200,34 @@ CryptoResult<String> ESPCrypto::createJwtResult(
 		result.status = makeStatus(CryptoStatus::InternalError, "sign failed");
 		return result;
 	}
+
 	std::string encodedSignature =
 	    base64Encode(signature.data(), signature.size(), Base64Alphabet::Url);
-	std::string token = signingInput + "." + encodedSignature;
-	result.value = String(token.c_str());
+	result.value = signingInput + "." + encodedSignature;
 	result.status = makeStatus(CryptoStatus::Ok);
 	return result;
 }
 
-CryptoResult<void> ESPCrypto::verifyJwtResult(
-    const String &token,
-    const std::string &key,
+CryptoResult<void> verify(
+    std::string_view token,
+    std::string_view key,
     JsonDocument &outClaims,
     const JwtVerifyOptions &options
 ) {
 	CryptoResult<void> result;
-	if (token.length() == 0 || key.empty()) {
+	if (token.empty() || key.empty()) {
 		result.status = makeStatus(CryptoStatus::InvalidInput, "token or key missing");
 		return result;
 	}
-	std::string tokenStd(token.c_str(), token.length());
+
+	std::string tokenStd(token);
 	size_t first = tokenStd.find('.');
 	size_t second = tokenStd.find('.', first == std::string::npos ? 0 : first + 1);
 	if (first == std::string::npos || second == std::string::npos) {
 		result.status = makeStatus(CryptoStatus::DecodeError, "invalid token structure");
 		return result;
 	}
+
 	std::string headerPart = tokenStd.substr(0, first);
 	std::string payloadPart = tokenStd.substr(first + 1, second - first - 1);
 	std::string signaturePart = tokenStd.substr(second + 1);
@@ -253,6 +240,7 @@ CryptoResult<void> ESPCrypto::verifyJwtResult(
 		result.status = makeStatus(CryptoStatus::DecodeError, "base64 decode failed");
 		return result;
 	}
+
 	JsonDocument headerDoc;
 	if (deserializeJson(headerDoc, headerBytes.data(), headerBytes.size()) !=
 	    DeserializationError::Ok) {
@@ -265,6 +253,7 @@ CryptoResult<void> ESPCrypto::verifyJwtResult(
 		result.status = makeStatus(CryptoStatus::JsonError, "invalid payload json");
 		return result;
 	}
+
 	const char *algStr = headerDoc["alg"].as<const char *>();
 	JwtAlgorithm alg = algorithmFromName(algStr ? algStr : "");
 	if (alg == JwtAlgorithm::Auto) {
@@ -275,13 +264,13 @@ CryptoResult<void> ESPCrypto::verifyJwtResult(
 		result.status = makeStatus(CryptoStatus::PolicyViolation, "alg mismatch");
 		return result;
 	}
+
 	const char *typHdr = headerDoc["typ"].as<const char *>();
-	if (options.expectedTyp.length() > 0) {
-		if (!typHdr || options.expectedTyp != typHdr) {
-			result.status = makeStatus(CryptoStatus::PolicyViolation, "typ mismatch");
-			return result;
-		}
+	if (!options.expectedTyp.empty() && (!typHdr || options.expectedTyp != typHdr)) {
+		result.status = makeStatus(CryptoStatus::PolicyViolation, "typ mismatch");
+		return result;
 	}
+
 	JsonArray crit = headerDoc["crit"].as<JsonArray>();
 	if (!crit.isNull() && !options.criticalHeadersAllowed.empty()) {
 		for (JsonVariant v : crit) {
@@ -289,7 +278,9 @@ CryptoResult<void> ESPCrypto::verifyJwtResult(
 			bool allowed = name && std::any_of(
 			                           options.criticalHeadersAllowed.begin(),
 			                           options.criticalHeadersAllowed.end(),
-			                           [&](const String &allowedName) { return allowedName == name; }
+			                           [&](const std::string &allowedName) {
+				                           return allowedName == name;
+			                           }
 			                       );
 			if (!allowed) {
 				result.status =
@@ -301,10 +292,11 @@ CryptoResult<void> ESPCrypto::verifyJwtResult(
 		result.status = makeStatus(CryptoStatus::PolicyViolation, "crit header not allowed");
 		return result;
 	}
+
 	std::string signingInput = headerPart + "." + payloadPart;
 	if (!verifySignature(
 	        alg,
-	        key,
+	        std::string(key),
 	        reinterpret_cast<const uint8_t *>(signingInput.data()),
 	        signingInput.size(),
 	        signatureBytes
@@ -312,6 +304,7 @@ CryptoResult<void> ESPCrypto::verifyJwtResult(
 		result.status = makeStatus(CryptoStatus::VerifyFailed, "signature mismatch");
 		return result;
 	}
+
 	uint32_t now = currentTimeSeconds(options.currentTimestamp);
 	uint32_t leeway = options.leewaySeconds;
 	uint32_t exp = payloadDoc["exp"].as<uint32_t>();
@@ -328,30 +321,33 @@ CryptoResult<void> ESPCrypto::verifyJwtResult(
 		result.status = makeStatus(CryptoStatus::NotYetValid, "token not active");
 		return result;
 	}
+
 	auto audMatch = [&](const char *aud) -> bool {
 		if (!aud) {
 			return false;
 		}
-		if (options.audience.length() > 0 && options.audience == aud) {
+		if (!options.audience.empty() && options.audience == aud) {
 			return true;
 		}
 		if (std::any_of(
 		        options.audiences.begin(),
 		        options.audiences.end(),
-		        [&](const String &allowedAudience) { return allowedAudience == aud; }
+		        [&](const std::string &allowedAudience) { return allowedAudience == aud; }
 		    )) {
 			return true;
 		}
-		return options.audience.length() == 0 && options.audiences.empty();
+		return options.audience.empty() && options.audiences.empty();
 	};
-	if (options.audience.length() > 0 || !options.audiences.empty()) {
+
+	if (!options.audience.empty() || !options.audiences.empty()) {
 		bool ok = false;
 		if (payloadDoc["aud"].is<JsonArray>()) {
 			JsonArray arr = payloadDoc["aud"].as<JsonArray>();
 			for (JsonVariant v : arr) {
 				ok = audMatch(v.as<const char *>());
-				if (ok)
+				if (ok) {
 					break;
+				}
 			}
 		} else {
 			ok = audMatch(payloadDoc["aud"].as<const char *>());
@@ -361,58 +357,66 @@ CryptoResult<void> ESPCrypto::verifyJwtResult(
 			return result;
 		}
 	}
-	if (options.issuer.length() > 0) {
+
+	if (!options.issuer.empty()) {
 		const char *iss = payloadDoc["iss"].as<const char *>();
 		if (!iss || options.issuer != iss) {
 			result.status = makeStatus(CryptoStatus::IssuerMismatch, "iss mismatch");
 			return result;
 		}
 	}
+
 	outClaims.set(payloadDoc);
 	result.status = makeStatus(CryptoStatus::Ok);
 	return result;
 }
 
-CryptoResult<void> ESPCrypto::verifyJwtWithJwks(
-    const String &token,
+CryptoResult<void> verifyWithJwks(
+    std::string_view token,
     const JsonDocument &jwks,
     JsonDocument &outClaims,
     const JwtVerifyOptions &options
 ) {
 	CryptoResult<void> result;
-	if (token.length() == 0) {
+	if (token.empty()) {
 		result.status = makeStatus(CryptoStatus::InvalidInput, "token missing");
 		return result;
 	}
-	std::string tokenStd(token.c_str(), token.length());
+
+	std::string tokenStd(token);
 	size_t first = tokenStd.find('.');
 	size_t second = tokenStd.find('.', first == std::string::npos ? 0 : first + 1);
 	if (first == std::string::npos || second == std::string::npos) {
 		result.status = makeStatus(CryptoStatus::DecodeError, "invalid token structure");
 		return result;
 	}
+
 	std::string headerPart = tokenStd.substr(0, first);
 	std::vector<uint8_t> headerBytes;
 	if (!base64Decode(headerPart, Base64Alphabet::Url, headerBytes)) {
 		result.status = makeStatus(CryptoStatus::DecodeError, "base64 decode failed");
 		return result;
 	}
+
 	JsonDocument headerDoc;
 	if (deserializeJson(headerDoc, headerBytes.data(), headerBytes.size()) !=
 	    DeserializationError::Ok) {
 		result.status = makeStatus(CryptoStatus::JsonError, "invalid header json");
 		return result;
 	}
+
 	const char *kid = headerDoc["kid"].as<const char *>();
 	JwtAlgorithm alg = algorithmFromName(
 	    headerDoc["alg"].as<const char *>() ? headerDoc["alg"].as<const char *>() : ""
 	);
-	auto keyRes = selectJwkFromSet(jwks, kid ? String(kid) : String(), alg);
+	auto keyRes = selectJwkFromSet(jwks, kid ? std::string(kid) : std::string(), alg);
 	if (!keyRes.ok()) {
 		result.status = keyRes.status;
 		return result;
 	}
+
 	auto bytes = keyRes.value.bytes();
 	std::string keyStr(reinterpret_cast<const char *>(bytes.data()), bytes.size());
-	return verifyJwtResult(token, keyStr, outClaims, options);
+	return verify(token, keyStr, outClaims, options);
 }
+} // namespace espcrypto::jwt
