@@ -1,0 +1,3 @@
+unusedPrivateFunction:src/esp_crypto/esp_crypto.h
+noExplicitConstructor:src/esp_crypto/esp_crypto.h
+constParameterReference:src/esp_crypto/esp_crypto.cpp

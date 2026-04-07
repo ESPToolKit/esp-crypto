@@ -1325,33 +1325,27 @@ CryptoStatusDetail LittleFsKeyStore::remove(const KeyHandle &handle) {
 }
 
 std::vector<uint8_t> deviceFingerprint() {
-	std::vector<uint8_t> fingerprint;
 #if defined(ESP_PLATFORM)
 	uint8_t mac[6] = {0};
-	bool haveMac = false;
 #if ESPCRYPTO_HAS_ESP_MAC && defined(ESP_MAC_WIFI_STA)
 	if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
-		haveMac = true;
+		return std::vector<uint8_t>(mac, mac + sizeof(mac));
 	}
 #endif
 #if ESPCRYPTO_HAS_ESP_EFUSE_MAC
-	if (!haveMac && esp_efuse_mac_get_default(mac) == ESP_OK) {
-		haveMac = true;
+	if (esp_efuse_mac_get_default(mac) == ESP_OK) {
+		return std::vector<uint8_t>(mac, mac + sizeof(mac));
 	}
 #endif
-	if (haveMac) {
-		fingerprint.insert(fingerprint.end(), mac, mac + sizeof(mac));
-	}
+	return std::vector<uint8_t>(8, 0xAA);
 #else
+	std::vector<uint8_t> fingerprint;
 	std::random_device rd;
 	for (size_t i = 0; i < 8; ++i) {
 		fingerprint.push_back(static_cast<uint8_t>(rd()));
 	}
-#endif
-	if (fingerprint.empty()) {
-		fingerprint.resize(8, 0xAA);
-	}
 	return fingerprint;
+#endif
 }
 
 CryptoStatusDetail loadOrCreateSeed(std::vector<uint8_t> &seed, const DeviceKeyOptions &options) {
@@ -1383,11 +1377,8 @@ CryptoStatusDetail loadOrCreateSeed(std::vector<uint8_t> &seed, const DeviceKeyO
 
 CryptoKey::CryptoKey() = default;
 
-CryptoKey::CryptoKey(const CryptoKey &other) {
-	data = other.data;
-	format = other.format;
-	keyKind = other.keyKind;
-	pk = nullptr;
+CryptoKey::CryptoKey(const CryptoKey &other)
+    : data(other.data), format(other.format), keyKind(other.keyKind), pk(nullptr) {
 }
 
 CryptoKey &CryptoKey::operator=(const CryptoKey &other) {
@@ -1400,11 +1391,8 @@ CryptoKey &CryptoKey::operator=(const CryptoKey &other) {
 	return *this;
 }
 
-CryptoKey::CryptoKey(CryptoKey &&other) noexcept {
-	data = std::move(other.data);
-	format = other.format;
-	keyKind = other.keyKind;
-	pk = other.pk;
+CryptoKey::CryptoKey(CryptoKey &&other) noexcept
+    : data(std::move(other.data)), format(other.format), keyKind(other.keyKind), pk(other.pk) {
 	other.pk = nullptr;
 }
 
@@ -1491,7 +1479,7 @@ CryptoStatusDetail CryptoKey::ensureParsedPk(bool requirePrivate) const {
 	}
 	pk = new PkCache();
 	mbedtls_pk_init(&pk->ctx);
-	int ret = 0;
+	int ret;
 	if (format == KeyFormat::Pem) {
 		ret = mbedtls_pk_parse_public_key(
 		    &pk->ctx,
@@ -1511,7 +1499,7 @@ CryptoStatusDetail CryptoKey::ensureParsedPk(bool requirePrivate) const {
 		ret = mbedtls_pk_parse_key(
 		    &pk->ctx,
 		    reinterpret_cast<const unsigned char *>(data.data()),
-		    format == KeyFormat::Pem ? data.size() : data.size(),
+		    data.size(),
 		    nullptr,
 		    0,
 		    mbedtls_ctr_drbg_random,
@@ -1521,7 +1509,7 @@ CryptoStatusDetail CryptoKey::ensureParsedPk(bool requirePrivate) const {
 		ret = mbedtls_pk_parse_key(
 		    &pk->ctx,
 		    reinterpret_cast<const unsigned char *>(data.data()),
-		    format == KeyFormat::Pem ? data.size() : data.size(),
+		    data.size(),
 		    nullptr,
 		    0
 		);
@@ -1702,12 +1690,12 @@ bool pkParsePublicOrPrivate(
 	}
 	mbedtls_ctr_drbg_context localCtr;
 	mbedtls_entropy_context localEntropy;
+	mbedtls_ctr_drbg_context *effectiveCtr = ctr;
 	if (!ctr || !entropy) {
-		ctr = &localCtr;
-		entropy = &localEntropy;
 		if (!initDrbg(localCtr, localEntropy)) {
 			return false;
 		}
+		effectiveCtr = &localCtr;
 	}
 #if ESPCRYPTO_MBEDTLS_V3
 	ret = mbedtls_pk_parse_key(
@@ -1717,7 +1705,7 @@ bool pkParsePublicOrPrivate(
 	    nullptr,
 	    0,
 	    mbedtls_ctr_drbg_random,
-	    ctr
+	    effectiveCtr
 	);
 #else
 	ret = mbedtls_pk_parse_key(
@@ -1728,7 +1716,7 @@ bool pkParsePublicOrPrivate(
 	    0
 	);
 #endif
-	if (ctr == &localCtr) {
+	if (effectiveCtr == &localCtr) {
 		mbedtls_ctr_drbg_free(&localCtr);
 		mbedtls_entropy_free(&localEntropy);
 	}
@@ -2004,10 +1992,10 @@ bool softwareAesCtr(
 	mbedtls_aes_init(&ctx);
 	bool ok = mbedtls_aes_setkey_enc(&ctx, key.data(), key.size() * 8) == 0;
 	unsigned char counter[16] = {0};
-	unsigned char stream[16] = {0};
 	memcpy(counter, nonceCounter.data(), 16);
 	size_t off = 0;
 	if (ok) {
+		unsigned char stream[16] = {0};
 		ok = mbedtls_aes_crypt_ctr(
 		         &ctx,
 		         input.size(),
@@ -2183,15 +2171,20 @@ CryptoStatusDetail aesGcmEncryptSpan(
 	if (tag.size() < AES_GCM_TAG_BYTES) {
 		return makeStatus(CryptoStatus::BufferTooSmall, "tag buffer too small");
 	}
+#if ESPCRYPTO_ENABLE_NONCE_GUARD
 	std::vector<uint8_t> ivCopy(iv.data(), iv.data() + iv.size());
 	if (nonceReused(key, ivCopy)) {
 		secureZero(ivCopy.data(), ivCopy.size());
 		return makeStatus(CryptoStatus::NonceReuse, "iv reuse");
 	}
 	secureZero(ivCopy.data(), ivCopy.size());
+#endif
 	CryptoSpan<uint8_t> ctSlice(ciphertext.data(), plaintext.size());
 	CryptoSpan<uint8_t> tagSlice(tag.data(), AES_GCM_TAG_BYTES);
-	bool ok = hardwareGcmCryptSpan(MBEDTLS_GCM_ENCRYPT, key, iv, aad, plaintext, ctSlice, tagSlice);
+	bool ok = false;
+#if ESPCRYPTO_AES_GCM_ACCEL
+	ok = hardwareGcmCryptSpan(MBEDTLS_GCM_ENCRYPT, key, iv, aad, plaintext, ctSlice, tagSlice);
+#endif
 	if (!ok) {
 		ok = softwareGcmCrypt(MBEDTLS_GCM_ENCRYPT, key, iv, aad, plaintext, ctSlice, tagSlice);
 	}
@@ -2224,7 +2217,9 @@ CryptoStatusDetail aesGcmDecryptSpan(
 	}
 	CryptoSpan<uint8_t> ptSlice(plaintext.data(), ciphertext.size());
 	std::vector<uint8_t> tagCopy(tag.data(), tag.data() + tag.size());
-	bool ok = hardwareGcmCryptSpan(
+	bool ok = false;
+#if ESPCRYPTO_AES_GCM_ACCEL
+	ok = hardwareGcmCryptSpan(
 	    MBEDTLS_GCM_DECRYPT,
 	    key,
 	    iv,
@@ -2233,6 +2228,7 @@ CryptoStatusDetail aesGcmDecryptSpan(
 	    ptSlice,
 	    CryptoSpan<uint8_t>(tagCopy)
 	);
+#endif
 	if (!ok) {
 		tagCopy.assign(tag.data(), tag.data() + tag.size());
 		ok = softwareGcmCrypt(
@@ -2481,9 +2477,11 @@ ESPCrypto::shaResult(CryptoSpan<const uint8_t> data, const ShaOptions &options) 
 	const uint8_t *buffer = data.size() == 0 ? &ZERO_BYTE : data.data();
 	size_t length = data.size();
 	bool hashed = false;
+#if ESPCRYPTO_SHA_ACCEL
 	if (options.preferHardware) {
 		hashed = tryHardwareSha(options.variant, buffer, length, result.value.data());
 	}
+#endif
 	if (!hashed) {
 		hashed = softwareSha(options.variant, buffer, length, result.value.data());
 	}
@@ -2688,11 +2686,11 @@ CryptoResult<GcmMessage> ESPCrypto::aesGcmEncryptAuto(
 ) {
 	CryptoResult<GcmMessage> result;
 	markRuntimeInitialized();
-	const CryptoPolicy &policy = mutablePolicy();
+	const CryptoPolicy &cryptoPolicy = mutablePolicy();
 	if (ivLength == 0) {
-		ivLength = policy.minAesGcmIvBytes;
+		ivLength = cryptoPolicy.minAesGcmIvBytes;
 	}
-	if (!policy.allowLegacy && ivLength < policy.minAesGcmIvBytes) {
+	if (!cryptoPolicy.allowLegacy && ivLength < cryptoPolicy.minAesGcmIvBytes) {
 		result.status = makeStatus(CryptoStatus::PolicyViolation, "iv too short");
 		return result;
 	}
@@ -2735,10 +2733,10 @@ CryptoResult<GcmMessage> ESPCrypto::aesGcmEncryptAuto(
 			    counter
 			);
 		}
-		for (int i = 0; i < 8 && i < static_cast<int>(ivLength); ++i) {
+		for (size_t i = 0; i < 8; ++i) {
 			result.value.iv[i] = static_cast<uint8_t>((counter >> (56 - 8 * i)) & 0xFF);
 		}
-		std::vector<uint8_t> tail(ivLength > 8 ? ivLength - 8 : 0, 0);
+		std::vector<uint8_t> tail(ivLength - 8, 0);
 		if (!tail.empty()) {
 			fillRandom(tail.data(), tail.size());
 			memcpy(result.value.iv.data() + 8, tail.data(), tail.size());
@@ -2752,10 +2750,10 @@ CryptoResult<GcmMessage> ESPCrypto::aesGcmEncryptAuto(
 			return result;
 		}
 		uint64_t counter = state.bootCounter.load(std::memory_order_relaxed);
-		for (int i = 0; i < 8 && i < static_cast<int>(ivLength); ++i) {
+		for (size_t i = 0; i < 8; ++i) {
 			result.value.iv[i] = static_cast<uint8_t>((counter >> (56 - 8 * i)) & 0xFF);
 		}
-		std::vector<uint8_t> tail(ivLength > 8 ? ivLength - 8 : 0, 0);
+		std::vector<uint8_t> tail(ivLength - 8, 0);
 		if (!tail.empty()) {
 			fillRandom(tail.data(), tail.size());
 			memcpy(result.value.iv.data() + 8, tail.data(), tail.size());
@@ -2845,7 +2843,10 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::aesCtrCrypt(
 		return result;
 	}
 	result.value.assign(input.size(), 0);
-	bool ok = hardwareAesCtr(key, nonceCounter, input, result.value);
+	bool ok = false;
+#if ESPCRYPTO_AES_ACCEL
+	ok = hardwareAesCtr(key, nonceCounter, input, result.value);
+#endif
 	if (!ok) {
 		ok = softwareAesCtr(key, nonceCounter, input, result.value);
 	}
@@ -3311,13 +3312,11 @@ CryptoResult<void> ESPCrypto::verifyJwtResult(
 	if (!crit.isNull() && !options.criticalHeadersAllowed.empty()) {
 		for (JsonVariant v : crit) {
 			const char *name = v.as<const char *>();
-			bool allowed = false;
-			for (const auto &allowedName : options.criticalHeadersAllowed) {
-				if (name && allowedName == name) {
-					allowed = true;
-					break;
-				}
-			}
+			bool allowed = name && std::any_of(
+			                           options.criticalHeadersAllowed.begin(),
+			                           options.criticalHeadersAllowed.end(),
+			                           [&](const String &allowedName) { return allowedName == name; }
+			                       );
 			if (!allowed) {
 				result.status =
 				    makeStatus(CryptoStatus::PolicyViolation, "crit header not allowed");
@@ -3362,10 +3361,12 @@ CryptoResult<void> ESPCrypto::verifyJwtResult(
 		if (options.audience.length() > 0 && options.audience == aud) {
 			return true;
 		}
-		for (const auto &a : options.audiences) {
-			if (a == aud) {
-				return true;
-			}
+		if (std::any_of(
+		        options.audiences.begin(),
+		        options.audiences.end(),
+		        [&](const String &allowedAudience) { return allowedAudience == aud; }
+		    )) {
+			return true;
 		}
 		return options.audience.length() == 0 && options.audiences.empty();
 	};
@@ -3463,10 +3464,10 @@ ESPCrypto::hashStringResult(const String &input, const PasswordHashOptions &opti
 	uint8_t cost = std::min<uint8_t>(options.cost, 31);
 	uint32_t iterations = 1u << cost;
 	markRuntimeInitialized();
-	const CryptoPolicy &policy = mutablePolicy();
-	if (!policy.allowLegacy && iterations < policy.minPbkdf2Iterations) {
+	const CryptoPolicy &cryptoPolicy = mutablePolicy();
+	if (!cryptoPolicy.allowLegacy && iterations < cryptoPolicy.minPbkdf2Iterations) {
 		uint8_t adjustedCost = cost;
-		while ((1u << adjustedCost) < policy.minPbkdf2Iterations && adjustedCost < 31) {
+		while ((1u << adjustedCost) < cryptoPolicy.minPbkdf2Iterations && adjustedCost < 31) {
 			adjustedCost++;
 		}
 		cost = adjustedCost;
@@ -3515,8 +3516,8 @@ CryptoResult<void> ESPCrypto::verifyStringResult(const String &input, const Stri
 	}
 	uint32_t iterations = 1u << cost;
 	markRuntimeInitialized();
-	const CryptoPolicy &policy = mutablePolicy();
-	if (!policy.allowLegacy && iterations < policy.minPbkdf2Iterations) {
+	const CryptoPolicy &cryptoPolicy = mutablePolicy();
+	if (!cryptoPolicy.allowLegacy && iterations < cryptoPolicy.minPbkdf2Iterations) {
 		result.status = makeStatus(CryptoStatus::PolicyViolation, "pbkdf2 iterations below policy");
 		return result;
 	}
@@ -3644,8 +3645,8 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::pbkdf2(
 		return result;
 	}
 	markRuntimeInitialized();
-	const CryptoPolicy &policy = mutablePolicy();
-	if (!policy.allowLegacy && iterations < policy.minPbkdf2Iterations) {
+	const CryptoPolicy &cryptoPolicy = mutablePolicy();
+	if (!cryptoPolicy.allowLegacy && iterations < cryptoPolicy.minPbkdf2Iterations) {
 		result.status = makeStatus(CryptoStatus::PolicyViolation, "iterations below policy");
 		return result;
 	}

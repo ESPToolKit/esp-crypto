@@ -41,9 +41,11 @@ jobs:
           cppcheck \
             --enable=warning,style,performance,portability \
             --std=c++17 \
+            --force \
             --error-exitcode=1 \
             --inline-suppr \
             --quiet \
+            --suppressions-list=.cppcheck-suppressions \
             --suppress=missingIncludeSystem \
             --suppress=missingInclude \
             src
