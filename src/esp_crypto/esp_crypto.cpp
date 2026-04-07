@@ -438,31 +438,6 @@ CryptoResult<std::vector<uint8_t>> ecdsaRawToDerInternal(CryptoSpan<const uint8_
 		result.value.assign(p, p + total);
 		result.status = makeStatus(CryptoStatus::Ok);
 	} while (false);
-	do {
-		if (mbedtls_mpi_read_binary(&r, raw.data(), part) != 0 ||
-		    mbedtls_mpi_read_binary(&s, raw.data() + part, part) != 0) {
-			result.status = makeStatus(CryptoStatus::DecodeError, "raw mpi");
-			break;
-		}
-		unsigned char buffer[200];
-		unsigned char *p = buffer + sizeof(buffer);
-		size_t len = 0;
-		if (mbedtls_asn1_write_mpi(&p, buffer, &s) < 0 ||
-		    mbedtls_asn1_write_mpi(&p, buffer, &r) < 0) {
-			result.status = makeStatus(CryptoStatus::InternalError, "asn1 mpi write");
-			break;
-		}
-		len = static_cast<size_t>(buffer + sizeof(buffer) - p);
-		if (mbedtls_asn1_write_len(&p, buffer, len) < 0 ||
-		    mbedtls_asn1_write_tag(&p, buffer, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) <
-		        0) {
-			result.status = makeStatus(CryptoStatus::InternalError, "asn1 len");
-			break;
-		}
-		size_t total = static_cast<size_t>(buffer + sizeof(buffer) - p);
-		result.value.assign(p, p + total);
-		result.status = makeStatus(CryptoStatus::Ok);
-	} while (false);
 	mbedtls_mpi_free(&r);
 	mbedtls_mpi_free(&s);
 	return result;

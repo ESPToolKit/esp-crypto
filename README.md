@@ -17,7 +17,7 @@ ESPCrypto wraps the ESP32 hardware crypto blocks (SHA, AES-GCM/CTR, RSA/ECC) wit
 - AES-GCM and AES-CTR utilities with a safe `aesGcmEncryptAuto` that generates a random 12-byte IV, optional nonce-reuse debug guard, and capability introspection via `ESPCrypto::caps()`.
 - RSA/ECC signing + verification helpers (PKCS#1 v1.5 + ECDSA) that power HS256/RS256/ES256 JWT flows or stand-alone signatures.
 - `CryptoKey` + `KeyHandle` abstractions with `MemoryKeyStore`, `NvsKeyStore`, and `LittleFsKeyStore` for alias/versioned key rotation plus cached mbedTLS contexts to avoid repeated parsing.
-- Device-bound HKDF helper `deriveDeviceKey(...)` that seeds from an optional persistent NVS secret and the chip fingerprint so long-term symmetric keys are not hard-coded.
+- Device-bound HKDF helper `deriveDeviceKey(...)` that derives stable per-device keys from an optional persistent NVS secret plus the chip fingerprint, mainly to avoid hard-coded symmetric keys rather than to provide hardware-backed key protection.
 - Buffer-friendly span overloads for SHA digests and AES-GCM encrypt/decrypt that write into caller-provided buffers to reduce heap churn on large payloads, plus streaming contexts (`ShaCtx`, `HmacCtx`, `AesCtrStream`, `AesGcmCtx`) for chunked workloads.
 - Nonce strategies for AES-GCM auto IVs: random 96-bit (default), counter+random hybrid, or boot-counter based with optional NVS persistence to avoid reuse under long-lived keys.
 - Modern lanes: ChaCha20-Poly1305 for CPUs without AES accel, X25519 ECDH helper, and ECDSA DER↔raw helpers to interop with JOSE stacks. (Ed25519/EdDSA stay capability-gated to platform support.)
@@ -99,7 +99,7 @@ void rotate_keys() {
 }
 ```
 
-`NvsKeyStore` persists keys with optional encrypted NVS, `LittleFsKeyStore` stores blobs on LittleFS when mounted, and `MemoryKeyStore` stays in-RAM for tests or ephemeral rotations.
+`MemoryKeyStore` keeps key material only in RAM for tests or ephemeral rotations. `LittleFsKeyStore` stores blobs on LittleFS when mounted, and `NvsKeyStore` persists blobs in NVS with whatever flash/NVS protection the device is configured for. None of these backends should be treated as a secure-element substitute.
 
 ## API Highlights
 - `CryptoResult<std::vector<uint8_t>> shaResult(...)` / `shaHex(...)` – SHA256/384/512 with optional hardware preference (default on) and structured status codes.
@@ -123,10 +123,10 @@ void rotate_keys() {
 ## Policy & Guardrails
 - `CryptoPolicy` (default: RSA ≥ 2048 bits, PBKDF2 iterations ≥ 1024, GCM IV ≥ 12 bytes) is readable via `ESPCrypto::policy()` and adjustable with `setPolicy(...)`; set `allowLegacy = true` to opt into weaker parameters.
 - AES-GCM can enable debug nonce-reuse detection via `ESPCRYPTO_ENABLE_NONCE_GUARD` (tiny LRU cache keyed by IV + key fingerprint).
-- `constantTimeEq` and `SecureBuffer`/`SecureString` keep comparisons and cleanup timing-safe.
+- `constantTimeEq` performs content-constant-time comparison only when both inputs already have the same length; a length mismatch returns `false` immediately. `SecureBuffer` and `SecureString` zeroize owned memory on cleanup.
 
 ## Security Posture
-- Constant-time coverage: `constantTimeEq` underpins password verification and HS256 JWT checks; other primitives lean on ESP-IDF/mbedTLS implementations and should be treated as best-effort constant-time rather than hardened side-channel countermeasures.
+- Constant-time coverage: `constantTimeEq` underpins password verification and HS256 JWT checks when compared buffers are the same length; it does not hide input length. Other primitives lean on ESP-IDF/mbedTLS implementations and should be treated as best-effort constant-time rather than hardened side-channel countermeasures.
 - Hardware acceleration: SHA, AES-CTR, and AES-GCM try the ESP hardware blocks first and fall back to mbedTLS software paths; `ESPCrypto::caps()` reports what is active at runtime. Random bytes come from `esp_fill_random` on-device and from `std::random_device` only for host builds/tests.
 - Best-effort hardening: password hashes stay in a structured envelope with policy-enforced PBKDF2 costs, AES-GCM enforces IV length and offers an optional nonce-reuse guard, and sensitive buffers zeroize on scope exit or failure paths.
 - Threat model: aimed at network-connected ESP32-class devices where attackers can send arbitrary inputs. It does not attempt to defend against physical capture, power/EM/fault-injection side channels, or secure element/key storage requirements; review your board’s secure boot/flash encryption story separately.

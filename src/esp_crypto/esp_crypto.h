@@ -448,6 +448,8 @@ class ESPCrypto {
 	static void setPolicy(const CryptoPolicy &policy);
 	static CryptoPolicy policy();
 	static CryptoCaps caps();
+	// Content comparison is constant-time only when lengths already match.
+	// A length mismatch returns false immediately and should be treated as public metadata.
 	static bool constantTimeEq(const std::vector<uint8_t> &a, const std::vector<uint8_t> &b);
 	static bool constantTimeEq(CryptoSpan<const uint8_t> a, CryptoSpan<const uint8_t> b);
 

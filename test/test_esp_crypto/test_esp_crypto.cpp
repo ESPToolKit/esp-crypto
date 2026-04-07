@@ -438,9 +438,25 @@ void test_ecdsa_raw_der_roundtrip() {
 		raw[i] = static_cast<uint8_t>(i + 1);
 	auto der = ESPCrypto::ecdsaRawToDer(CryptoSpan<const uint8_t>(raw));
 	TEST_ASSERT_TRUE_MESSAGE(der.ok(), der.status.message.c_str());
+	TEST_ASSERT_TRUE(der.value.size() > 0);
 	auto rawBack = ESPCrypto::ecdsaDerToRaw(CryptoSpan<const uint8_t>(der.value));
 	TEST_ASSERT_TRUE_MESSAGE(rawBack.ok(), rawBack.status.message.c_str());
 	TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(raw, rawBack.value));
+
+	auto derAgain = ESPCrypto::ecdsaRawToDer(CryptoSpan<const uint8_t>(rawBack.value));
+	TEST_ASSERT_TRUE_MESSAGE(derAgain.ok(), derAgain.status.message.c_str());
+	TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(der.value, derAgain.value));
+}
+
+void test_constant_time_eq_semantics() {
+	const std::vector<uint8_t> a = {0x01, 0x02, 0x03};
+	const std::vector<uint8_t> same = {0x01, 0x02, 0x03};
+	const std::vector<uint8_t> diffSameLength = {0x01, 0x02, 0x04};
+	const std::vector<uint8_t> diffLength = {0x01, 0x02};
+
+	TEST_ASSERT_TRUE(ESPCrypto::constantTimeEq(a, same));
+	TEST_ASSERT_FALSE(ESPCrypto::constantTimeEq(a, diffSameLength));
+	TEST_ASSERT_FALSE(ESPCrypto::constantTimeEq(a, diffLength));
 }
 
 void test_aes_gcm_span_roundtrip() {
@@ -538,11 +554,13 @@ void setup() {
 	RUN_TEST(test_gcm_nonce_strategy_counter);
 	RUN_TEST(test_chacha20poly1305_roundtrip);
 	RUN_TEST(test_ecdsa_raw_der_roundtrip);
+	RUN_TEST(test_constant_time_eq_semantics);
 	RUN_TEST(test_hkdf_rfc5869_case1);
 	RUN_TEST(test_pbkdf2_vector);
 	RUN_TEST(test_jwt_roundtrip_hs256);
 	RUN_TEST(test_base64_encode_contract_via_jwt_result_api);
 	RUN_TEST(test_jwt_and_envelope_fuzz);
+	RUN_TEST(test_jwks_verification);
 	RUN_TEST(test_device_key_is_stable);
 	UNITY_END();
 }

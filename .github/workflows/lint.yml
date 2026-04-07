@@ -1,4 +1,4 @@
-name: Lint (Advisory)
+name: Lint And Static Analysis
 
 on:
   pull_request:
@@ -12,9 +12,8 @@ permissions:
 
 jobs:
   metadata_lint:
-    name: Metadata Lint (advisory)
+    name: Metadata Lint
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,3 +23,27 @@ jobs:
         with:
           library-manager: false
           project-type: library
+
+  cppcheck:
+    name: Cppcheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck
+
+      - name: Run cppcheck on library sources
+        run: |
+          cppcheck \
+            --enable=warning,style,performance,portability \
+            --std=c++17 \
+            --error-exitcode=1 \
+            --inline-suppr \
+            --quiet \
+            --suppress=missingIncludeSystem \
+            --suppress=missingInclude \
+            src
