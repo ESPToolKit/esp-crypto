@@ -731,6 +731,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::ecdsaDerToRaw(CryptoSpan<const uin
 
 CryptoResult<std::vector<uint8_t>> ESPCrypto::ecdsaRawToDer(CryptoSpan<const uint8_t> raw) {
 	return ecdsaRawToDerInternal(raw);
+}
 
 CryptoResult<std::vector<uint8_t>>
 ESPCrypto::x25519(CryptoSpan<const uint8_t> privateKey, CryptoSpan<const uint8_t> peerPublic) {

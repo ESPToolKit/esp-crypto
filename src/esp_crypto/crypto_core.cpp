@@ -41,9 +41,7 @@ void resetRuntimeState() {
 	GlobalRuntimeState &state = runtimeState();
 	state.nvsInitMap.clear();
 #if ESPCRYPTO_ENABLE_NONCE_GUARD
-	for (auto &record : state.nonceCache) {
-		record = NonceRecord{};
-	}
+	std::fill(state.nonceCache.begin(), state.nonceCache.end(), NonceRecord{});
 	state.nonceCursor = 0;
 #endif
 	state.bootCounter.store(0, std::memory_order_release);
@@ -68,16 +66,15 @@ bool nonceReused(const std::vector<uint8_t> &key, const std::vector<uint8_t> &iv
 	}
 	markRuntimeInitialized();
 	uint32_t keyHash = fingerprintKey(key);
-	for (const auto &record : state.nonceCache) {
-		if (!record.used || record.ivLen != iv.size()) {
-			continue;
-		}
-		if (record.keyHash != keyHash) {
-			continue;
-		}
-		if (memcmp(record.iv.data(), iv.data(), iv.size()) == 0) {
-			return true;
-		}
+	if (std::any_of(
+	        state.nonceCache.begin(),
+	        state.nonceCache.end(),
+	        [&](const NonceRecord &record) {
+		        return record.used && record.ivLen == iv.size() && record.keyHash == keyHash &&
+		               memcmp(record.iv.data(), iv.data(), iv.size()) == 0;
+	        }
+	    )) {
+		return true;
 	}
 	NonceRecord &slot = state.nonceCache[state.nonceCursor % state.nonceCache.size()];
 	slot.used = true;

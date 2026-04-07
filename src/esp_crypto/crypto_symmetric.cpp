@@ -210,6 +210,7 @@ bool hardwareAesCtr(
     const std::vector<uint8_t> &key,
     const std::vector<uint8_t> &nonceCounter,
     const std::vector<uint8_t> &input,
+    // cppcheck-suppress constParameterReference
     std::vector<uint8_t> &output
 ) {
 #if ESPCRYPTO_AES_ACCEL
@@ -331,7 +332,9 @@ bool hardwareGcmCrypt(
     const std::vector<uint8_t> &iv,
     const std::vector<uint8_t> &aad,
     const std::vector<uint8_t> &input,
+    // cppcheck-suppress constParameterReference
     std::vector<uint8_t> &output,
+    // cppcheck-suppress constParameterReference
     std::vector<uint8_t> &tag
 ) {
 	return hardwareGcmCryptSpan(
@@ -351,7 +354,9 @@ bool softwareGcmCrypt(
     const std::vector<uint8_t> &iv,
     const std::vector<uint8_t> &aad,
     const std::vector<uint8_t> &input,
+    // cppcheck-suppress constParameterReference
     std::vector<uint8_t> &output,
+    // cppcheck-suppress constParameterReference
     std::vector<uint8_t> &tag
 ) {
 	return softwareGcmCrypt(
