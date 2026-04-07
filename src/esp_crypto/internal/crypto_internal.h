@@ -2,6 +2,13 @@
 
 #include "../esp_crypto.h"
 
+#if __has_include(<ArduinoJson.h>)
+#include "../jwt.h"
+#define ESPCRYPTO_HAS_ARDUINOJSON 1
+#else
+#define ESPCRYPTO_HAS_ARDUINOJSON 0
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -47,10 +54,31 @@
 #define ESPCRYPTO_HAS_LITTLEFS 0
 #endif
 
+#if (defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)) && __has_include("esp_system.h")
+#define ESPCRYPTO_HAS_ESP_SYSTEM 1
+#else
+#define ESPCRYPTO_HAS_ESP_SYSTEM 0
+#endif
+
+#if (defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)) && __has_include("esp_timer.h")
+#define ESPCRYPTO_HAS_ESP_TIMER 1
+#else
+#define ESPCRYPTO_HAS_ESP_TIMER 0
+#endif
+
+#if ESPCRYPTO_HAS_ESP_SYSTEM || ESPCRYPTO_HAS_ESP_TIMER
+extern "C" {
+#if ESPCRYPTO_HAS_ESP_SYSTEM
+#include "esp_system.h"
+#endif
+#if ESPCRYPTO_HAS_ESP_TIMER
+#include "esp_timer.h"
+#endif
+}
+#endif
+
 #if defined(ESP_PLATFORM)
 extern "C" {
-#include "esp_system.h"
-#include "esp_timer.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #if defined(__has_include)
@@ -136,8 +164,10 @@ struct GlobalRuntimeState {
     std::atomic<uint64_t> bootCounter{0};
 };
 
+#if ESPCRYPTO_HAS_ARDUINOJSON
 std::string algorithmName(JwtAlgorithm alg);
 JwtAlgorithm algorithmFromName(const std::string &name);
+#endif
 
 void secureZero(void *data, size_t length);
 CryptoPolicy &mutablePolicy();
@@ -166,9 +196,11 @@ CryptoStatusDetail buildEcPemFromJwk(
     const std::string &crv,
     std::string &outPem
 );
+#if ESPCRYPTO_HAS_ARDUINOJSON
 CryptoResult<CryptoKey> jwkToKey(const JsonObjectConst &jwk);
 CryptoResult<CryptoKey>
 selectJwkFromSet(const JsonDocument &jwks, const std::string &kid, JwtAlgorithm algHint);
+#endif
 std::string handleKeyString(const KeyHandle &handle);
 bool ensureNvsReady(const std::string &partition);
 uint64_t loadCounterFromNvs(
@@ -239,6 +271,7 @@ bool pkVerifyInternal(
     size_t length,
     const std::vector<uint8_t> &signature
 );
+#if ESPCRYPTO_HAS_ARDUINOJSON
 bool signJwt(
     JwtAlgorithm alg,
     const std::string &key,
@@ -253,6 +286,7 @@ bool verifySignature(
     size_t length,
     const std::vector<uint8_t> &signature
 );
+#endif
 bool aesKeyValid(const std::vector<uint8_t> &key);
 bool hardwareAesCtr(
     const std::vector<uint8_t> &key,

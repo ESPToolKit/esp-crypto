@@ -1,5 +1,7 @@
 #include "internal/crypto_internal.h"
 
+#if ESPCRYPTO_HAS_ARDUINOJSON
+
 CryptoResult<CryptoKey>
 selectJwkFromSet(const JsonDocument &jwks, const std::string &kid, JwtAlgorithm algHint) {
 	CryptoResult<CryptoKey> result;
@@ -420,3 +422,5 @@ CryptoResult<void> verifyWithJwks(
 	return verify(token, keyStr, outClaims, options);
 }
 } // namespace espcrypto::jwt
+
+#endif

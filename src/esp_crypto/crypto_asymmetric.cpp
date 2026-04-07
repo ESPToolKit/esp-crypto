@@ -167,6 +167,7 @@ CryptoStatusDetail buildEcPemFromJwk(
 	return makeStatus(CryptoStatus::Ok);
 }
 
+#if ESPCRYPTO_HAS_ARDUINOJSON
 CryptoResult<CryptoKey> jwkToKey(const JsonObjectConst &jwk) {
 	CryptoResult<CryptoKey> result;
 	const char *kty = jwk["kty"].as<const char *>();
@@ -226,6 +227,7 @@ CryptoResult<CryptoKey> jwkToKey(const JsonObjectConst &jwk) {
 	result.status = makeStatus(CryptoStatus::Unsupported, "kty unsupported");
 	return result;
 }
+#endif
 
 bool pkParsePublicOrPrivate(
     mbedtls_pk_context &pk,
