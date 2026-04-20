@@ -1,17 +1,16 @@
 #include "internal/crypto_internal.h"
 
 std::string handleKeyString(const KeyHandle &handle) {
-	std::string alias(handle.alias.c_str(), handle.alias.length());
-	if (alias.empty()) {
+	if (handle.alias.empty()) {
 		return std::string();
 	}
-	return alias + ":" + std::to_string(handle.version);
+	return handle.alias + ":" + std::to_string(handle.version);
 }
 
-bool ensureNvsReady(const String &partition) {
+bool ensureNvsReady(const std::string &partition) {
 #if defined(ESP_PLATFORM)
 	GlobalRuntimeState &state = runtimeState();
-	auto it = state.nvsInitMap.find(partition.c_str());
+	auto it = state.nvsInitMap.find(partition);
 	if (it != state.nvsInitMap.end() && it->second) {
 		markRuntimeInitialized();
 		return true;
@@ -22,7 +21,7 @@ bool ensureNvsReady(const String &partition) {
 		err = nvs_flash_init_partition(partition.c_str());
 	}
 	bool ok = (err == ESP_OK);
-	state.nvsInitMap[partition.c_str()] = ok;
+	state.nvsInitMap[partition] = ok;
 	if (ok) {
 		markRuntimeInitialized();
 	}
@@ -34,7 +33,12 @@ bool ensureNvsReady(const String &partition) {
 }
 
 uint64_t
-loadCounterFromNvs(const String &ns, const String &partition, const std::string &key, bool &found) {
+loadCounterFromNvs(
+    const std::string &ns,
+    const std::string &partition,
+    const std::string &key,
+    bool &found
+) {
 	found = false;
 	uint64_t value = 0;
 #if defined(ESP_PLATFORM)
@@ -59,7 +63,10 @@ loadCounterFromNvs(const String &ns, const String &partition, const std::string 
 }
 
 void storeCounterToNvs(
-    const String &ns, const String &partition, const std::string &key, uint64_t value
+    const std::string &ns,
+    const std::string &partition,
+    const std::string &key,
+    uint64_t value
 ) {
 #if defined(ESP_PLATFORM)
 	if (!ensureNvsReady(partition)) {
@@ -115,7 +122,7 @@ CryptoStatusDetail MemoryKeyStore::remove(const KeyHandle &handle) {
 	return makeStatus(CryptoStatus::Ok);
 }
 
-NvsKeyStore::NvsKeyStore(String ns, String partition)
+NvsKeyStore::NvsKeyStore(std::string ns, std::string partition)
     : ns(std::move(ns)), partition(std::move(partition)) {
 }
 
@@ -131,8 +138,8 @@ CryptoStatusDetail NvsKeyStore::ensureInit() const {
 #endif
 }
 
-String NvsKeyStore::makeKeyName(const KeyHandle &handle) const {
-	return String(handleKeyString(handle).c_str());
+std::string NvsKeyStore::makeKeyName(const KeyHandle &handle) const {
+	return handleKeyString(handle);
 }
 
 CryptoResult<std::vector<uint8_t>> NvsKeyStore::load(const KeyHandle &handle) {
@@ -233,25 +240,25 @@ CryptoStatusDetail NvsKeyStore::remove(const KeyHandle &handle) {
 #endif
 }
 
-LittleFsKeyStore::LittleFsKeyStore(String basePath) : basePath(std::move(basePath)) {
+LittleFsKeyStore::LittleFsKeyStore(std::string basePath) : basePath(std::move(basePath)) {
 }
 
-String LittleFsKeyStore::makePath(const KeyHandle &handle) const {
+std::string LittleFsKeyStore::makePath(const KeyHandle &handle) const {
 	std::string name = handleKeyString(handle);
 	if (name.empty()) {
-		return String();
+		return std::string();
 	}
-	if (basePath.endsWith("/")) {
-		return basePath + name.c_str();
+	if (!basePath.empty() && basePath.back() == '/') {
+		return basePath + name;
 	}
-	return basePath + "/" + name.c_str();
+	return basePath + "/" + name;
 }
 
 CryptoResult<std::vector<uint8_t>> LittleFsKeyStore::load(const KeyHandle &handle) {
 	CryptoResult<std::vector<uint8_t>> result;
 #if ESPCRYPTO_HAS_LITTLEFS
-	String path = makePath(handle);
-	if (path.length() == 0) {
+	std::string path = makePath(handle);
+	if (path.empty()) {
 		result.status = makeStatus(CryptoStatus::InvalidInput, "alias missing");
 		return result;
 	}
@@ -259,7 +266,7 @@ CryptoResult<std::vector<uint8_t>> LittleFsKeyStore::load(const KeyHandle &handl
 		result.status = makeStatus(CryptoStatus::InternalError, "littlefs mount failed");
 		return result;
 	}
-	File f = LittleFS.open(path, "r");
+	File f = LittleFS.open(path.c_str(), "r");
 	if (!f) {
 		result.status = makeStatus(CryptoStatus::DecodeError, "key missing");
 		return result;
@@ -283,17 +290,17 @@ CryptoResult<std::vector<uint8_t>> LittleFsKeyStore::load(const KeyHandle &handl
 
 CryptoStatusDetail LittleFsKeyStore::store(const KeyHandle &handle, CryptoSpan<const uint8_t> key) {
 #if ESPCRYPTO_HAS_LITTLEFS
-	String path = makePath(handle);
-	if (path.length() == 0 || key.empty()) {
+	std::string path = makePath(handle);
+	if (path.empty() || key.empty()) {
 		return makeStatus(CryptoStatus::InvalidInput, "alias/key missing");
 	}
 	if (!LittleFS.begin()) {
 		return makeStatus(CryptoStatus::InternalError, "littlefs mount failed");
 	}
-	if (!LittleFS.exists(basePath)) {
-		LittleFS.mkdir(basePath);
+	if (!LittleFS.exists(basePath.c_str())) {
+		LittleFS.mkdir(basePath.c_str());
 	}
-	File f = LittleFS.open(path, "w");
+	File f = LittleFS.open(path.c_str(), "w");
 	if (!f) {
 		return makeStatus(CryptoStatus::InternalError, "open failed");
 	}
@@ -312,14 +319,14 @@ CryptoStatusDetail LittleFsKeyStore::store(const KeyHandle &handle, CryptoSpan<c
 
 CryptoStatusDetail LittleFsKeyStore::remove(const KeyHandle &handle) {
 #if ESPCRYPTO_HAS_LITTLEFS
-	String path = makePath(handle);
-	if (path.length() == 0) {
+	std::string path = makePath(handle);
+	if (path.empty()) {
 		return makeStatus(CryptoStatus::InvalidInput, "alias missing");
 	}
 	if (!LittleFS.begin()) {
 		return makeStatus(CryptoStatus::InternalError, "littlefs mount failed");
 	}
-	LittleFS.remove(path);
+	LittleFS.remove(path.c_str());
 	return makeStatus(CryptoStatus::Ok);
 #else
 	(void)handle;
@@ -383,14 +390,15 @@ CryptoStatusDetail loadOrCreateSeed(std::vector<uint8_t> &seed, const DeviceKeyO
 	return makeStatus(CryptoStatus::Ok);
 }
 
-CryptoResult<std::vector<uint8_t>> ESPCrypto::deriveDeviceKey(
-    const String &purpose,
+namespace espcrypto::device {
+CryptoResult<std::vector<uint8_t>> deriveKey(
+    std::string_view purpose,
     CryptoSpan<const uint8_t> contextInfo,
     size_t length,
     const DeviceKeyOptions &options
 ) {
 	CryptoResult<std::vector<uint8_t>> result;
-	if (purpose.length() == 0 || length == 0) {
+	if (purpose.empty() || length == 0) {
 		result.status = makeStatus(CryptoStatus::InvalidInput, "purpose/length missing");
 		return result;
 	}
@@ -406,7 +414,7 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::deriveDeviceKey(
 	if (!contextInfo.empty()) {
 		info.insert(info.end(), contextInfo.data(), contextInfo.data() + contextInfo.size());
 	}
-	auto derived = hkdf(
+	auto derived = espcrypto::kdf::hkdf(
 	    ShaVariant::SHA256,
 	    CryptoSpan<const uint8_t>(deviceSalt),
 	    CryptoSpan<const uint8_t>(seed),
@@ -423,8 +431,10 @@ CryptoResult<std::vector<uint8_t>> ESPCrypto::deriveDeviceKey(
 	result.status = makeStatus(CryptoStatus::Ok);
 	return result;
 }
+} // namespace espcrypto::device
 
-CryptoResult<void> ESPCrypto::storeKey(
+namespace espcrypto::keystore {
+CryptoResult<void> store(
     KeyStore &store, const KeyHandle &handle, CryptoSpan<const uint8_t> keyMaterial
 ) {
 	CryptoResult<void> result;
@@ -434,7 +444,7 @@ CryptoResult<void> ESPCrypto::storeKey(
 }
 
 CryptoResult<CryptoKey>
-ESPCrypto::loadKey(KeyStore &store, const KeyHandle &handle, KeyFormat format, KeyKind kind) {
+load(KeyStore &store, const KeyHandle &handle, KeyFormat format, KeyKind kind) {
 	CryptoResult<CryptoKey> result;
 	auto loaded = store.load(handle);
 	if (!loaded.ok()) {
@@ -462,8 +472,9 @@ ESPCrypto::loadKey(KeyStore &store, const KeyHandle &handle, KeyFormat format, K
 	return result;
 }
 
-CryptoResult<void> ESPCrypto::removeKey(KeyStore &store, const KeyHandle &handle) {
+CryptoResult<void> remove(KeyStore &store, const KeyHandle &handle) {
 	CryptoResult<void> result;
 	result.status = store.remove(handle);
 	return result;
 }
+} // namespace espcrypto::keystore

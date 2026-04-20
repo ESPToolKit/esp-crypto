@@ -19,7 +19,7 @@ All notable changes to this project will be documented in this file.
 - ChaCha20-Poly1305 encrypt/decrypt and X25519 shared-secret helper (capability-gated); XChaCha20-Poly1305 and Ed25519/EdDSA APIs are present but return `Unsupported` until a backend is available.
 - New examples: keystore/streaming demo, JWKS rotation, and micro-benchmarks for SHA/AES-GCM.
 - Planned curve25519 helpers once ESP-IDF exposes hardware accel hooks.
-- `SecureBuffer`/`SecureString` RAII containers that zeroize sensitive material, plus `CryptoStatus`/`CryptoResult` and span-based overloads for SHA, AES, JWT, signing, and password helpers.
+- `SecureBuffer`/secure text RAII containers that zeroize sensitive material, plus `CryptoStatus`/`CryptoResult` and span-based overloads for SHA, AES, JWT, signing, and password helpers.
 - AES-GCM safe helpers that auto-generate nonces, optional nonce-reuse debug guardrails, and capability reporting via `ESPCrypto::caps()`.
 - HMAC/HKDF/PBKDF2 APIs (SHA-256/384/512) with policy enforcement for PBKDF2 iteration counts and RSA/ECC key sizes.
 - Known-answer tests for SHA-2 variants, AES-GCM (NIST vectors), HKDF, PBKDF2, and AES-GCM auto-IV round-trips to keep regressions visible.

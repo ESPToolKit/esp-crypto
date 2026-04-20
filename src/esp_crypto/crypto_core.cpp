@@ -104,6 +104,19 @@ uint32_t currentTimeSeconds(uint32_t overrideValue) {
 #endif
 }
 
+uint64_t monotonicMillis() {
+#if defined(ESP_PLATFORM)
+	return static_cast<uint64_t>(esp_timer_get_time() / 1000ULL);
+#else
+	return static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::milliseconds>(
+	        std::chrono::steady_clock::now().time_since_epoch()
+	    )
+	        .count()
+	);
+#endif
+}
+
 std::string base64Encode(const uint8_t *data, size_t length, Base64Alphabet alphabet) {
 	if (length == 0) {
 		return std::string();
@@ -180,7 +193,7 @@ bool base64Decode(const std::string &input, Base64Alphabet alphabet, std::vector
 }
 
 void fillRandom(uint8_t *data, size_t length) {
-#if defined(ESP_PLATFORM)
+#if ESPCRYPTO_HAS_ESP_RANDOM
 	esp_fill_random(data, length);
 #else
 	std::random_device rd;
@@ -199,6 +212,16 @@ bool constantTimeEquals(CryptoSpan<const uint8_t> a, CryptoSpan<const uint8_t> b
 		diff |= static_cast<uint8_t>(a.data()[i] ^ b.data()[i]);
 	}
 	return diff == 0;
+}
+
+struct CryptoKey::PkCache {
+	mbedtls_pk_context ctx;
+	bool hasKey = false;
+	bool isPrivate = false;
+};
+
+mbedtls_pk_context &pkContext(const CryptoKey &key) {
+	return key.pk->ctx;
 }
 
 CryptoKey::CryptoKey() = default;
@@ -449,14 +472,14 @@ void SecureBuffer::resize(size_t bytes) {
 	buffer.assign(bytes, 0);
 }
 
-SecureString::SecureString(std::string value) : value(std::move(value)) {
+SecureText::SecureText(std::string value) : value(std::move(value)) {
 }
 
-SecureString::SecureString(SecureString &&other) noexcept : value(std::move(other.value)) {
+SecureText::SecureText(SecureText &&other) noexcept : value(std::move(other.value)) {
 	other.wipe();
 }
 
-SecureString &SecureString::operator=(SecureString &&other) noexcept {
+SecureText &SecureText::operator=(SecureText &&other) noexcept {
 	if (this != &other) {
 		wipe();
 		value = std::move(other.value);
@@ -465,35 +488,38 @@ SecureString &SecureString::operator=(SecureString &&other) noexcept {
 	return *this;
 }
 
-SecureString::~SecureString() {
+SecureText::~SecureText() {
 	wipe();
 }
 
-void SecureString::wipe() {
+void SecureText::wipe() {
 	if (!value.empty()) {
 		secureZero(&value[0], value.size());
 		value.clear();
 	}
 }
 
-void ESPCrypto::setPolicy(const CryptoPolicy &policy) {
+namespace espcrypto::policy {
+void set(const CryptoPolicy &policy) {
 	mutablePolicy() = policy;
 	markRuntimeInitialized();
 }
 
-CryptoPolicy ESPCrypto::policy() {
+CryptoPolicy get() {
 	return mutablePolicy();
 }
+} // namespace espcrypto::policy
 
-void ESPCrypto::deinit() {
+namespace espcrypto::runtime {
+void deinit() {
 	resetRuntimeState();
 }
 
-bool ESPCrypto::isInitialized() {
+bool isInitialized() {
 	return runtimeState().initialized.load(std::memory_order_acquire);
 }
 
-CryptoCaps ESPCrypto::caps() {
+CryptoCaps caps() {
 	CryptoCaps c;
 	c.shaAccel = ESPCRYPTO_SHA_ACCEL;
 	c.aesAccel = ESPCRYPTO_AES_ACCEL;
@@ -501,10 +527,11 @@ CryptoCaps ESPCrypto::caps() {
 	return c;
 }
 
-bool ESPCrypto::constantTimeEq(const std::vector<uint8_t> &a, const std::vector<uint8_t> &b) {
+bool constantTimeEq(const std::vector<uint8_t> &a, const std::vector<uint8_t> &b) {
 	return constantTimeEquals(CryptoSpan<const uint8_t>(a), CryptoSpan<const uint8_t>(b));
 }
 
-bool ESPCrypto::constantTimeEq(CryptoSpan<const uint8_t> a, CryptoSpan<const uint8_t> b) {
+bool constantTimeEq(CryptoSpan<const uint8_t> a, CryptoSpan<const uint8_t> b) {
 	return constantTimeEquals(a, b);
 }
+} // namespace espcrypto::runtime
