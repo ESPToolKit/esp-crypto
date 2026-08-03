@@ -1,3 +1,10 @@
+> [!WARNING]
+> This repository is deprecated and no longer maintained.
+>
+> Search for an equivalent library under the ZekStack organization at:
+> **[ZekStack/repositories](https://github.com/orgs/ZekStack/repositories)**
+>
+
 # ESPCrypto
 
 ESPCrypto wraps the ESP32 hardware crypto blocks (SHA, AES-GCM/CTR, RSA/ECC) with guardrails, automatic fallbacks, and high-level helpers (JWTs, salted hashes) that work in both ESP-IDF and Arduino builds.
